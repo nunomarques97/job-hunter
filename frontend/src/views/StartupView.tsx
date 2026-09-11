@@ -27,6 +27,24 @@ const TIMEOUT_MS = 20000;
 /** Consecutive failed health checks before a running app is called down. */
 const FAILURES_BEFORE_DOWN = 2;
 
+/** How long one health probe may take before it counts as unanswered. */
+const PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Give up on a promise that may never settle.
+ *
+ * The shell adopts anything listening on its port, so the thing being asked
+ * for health may be a socket that accepts the connection and then says
+ * nothing. `fetch` waits on that indefinitely, which froze this screen on
+ * "waiting" forever instead of letting it time out.
+ */
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error('The service did not answer.')), ms);
+    work.then(resolve, reject).finally(() => window.clearTimeout(timer));
+  });
+}
+
 type Phase =
   | { kind: 'waiting' }
   | { kind: 'timeout' }
@@ -41,35 +59,44 @@ export function StartupView({ children }: { children: ReactNode }) {
 
   const began = useRef(Date.now());
   const misses = useRef(0);
+  const checking = useRef(false);
   const ready = phase.kind === 'ready';
 
   const check = useCallback(async () => {
-    // The shell knows about the process; the API knows whether it is serving.
-    // Both are asked, because only one of them can report a Python that was
-    // never there.
-    const status = await backendStatus();
-    if (status?.state === 'failed') {
-      setPhase({ kind: 'failed', failure: status.failure });
-      return;
-    }
-
+    // A probe can outlive the interval that started it, and a queue of them
+    // helps nobody.
+    if (checking.current) return;
+    checking.current = true;
     try {
-      await api.health();
-      misses.current = 0;
-      setPhase({ kind: 'ready' });
-    } catch {
-      misses.current += 1;
-      setPhase((current) => {
-        if (current.kind === 'failed') return current;
-        if (current.kind === 'ready') {
-          // A single missed check is a hiccup, not an outage.
-          if (misses.current < FAILURES_BEFORE_DOWN) return current;
-          began.current = Date.now();
-          return { kind: 'waiting' };
-        }
-        const waited = Date.now() - began.current;
-        return waited >= TIMEOUT_MS ? { kind: 'timeout' } : { kind: 'waiting' };
-      });
+      // The shell knows about the process; the API knows whether it is
+      // serving. Both are asked, because only one of them can report a Python
+      // that was never there.
+      const status = await backendStatus();
+      if (status?.state === 'failed') {
+        setPhase({ kind: 'failed', failure: status.failure });
+        return;
+      }
+
+      try {
+        await withTimeout(api.health(), PROBE_TIMEOUT_MS);
+        misses.current = 0;
+        setPhase({ kind: 'ready' });
+      } catch {
+        misses.current += 1;
+        setPhase((current) => {
+          if (current.kind === 'failed') return current;
+          if (current.kind === 'ready') {
+            // A single missed check is a hiccup, not an outage.
+            if (misses.current < FAILURES_BEFORE_DOWN) return current;
+            began.current = Date.now();
+            return { kind: 'waiting' };
+          }
+          const waited = Date.now() - began.current;
+          return waited >= TIMEOUT_MS ? { kind: 'timeout' } : { kind: 'waiting' };
+        });
+      }
+    } finally {
+      checking.current = false;
     }
   }, []);
 
@@ -87,10 +114,18 @@ export function StartupView({ children }: { children: ReactNode }) {
   }, [check, ready]);
 
   // The counter and the log only matter while something is wrong or pending.
+  //
+  // The timeout is decided here rather than in the health check, because a
+  // check that never settles would otherwise leave this screen waiting for
+  // ever with a counter that keeps climbing past twenty seconds.
   useEffect(() => {
     if (ready) return;
     const tick = window.setInterval(() => {
-      setElapsed((Date.now() - began.current) / 1000);
+      const waited = Date.now() - began.current;
+      setElapsed(waited / 1000);
+      if (waited >= TIMEOUT_MS) {
+        setPhase((current) => (current.kind === 'waiting' ? { kind: 'timeout' } : current));
+      }
     }, 250);
     return () => window.clearInterval(tick);
   }, [ready]);
