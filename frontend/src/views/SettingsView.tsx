@@ -14,7 +14,7 @@ import { useAsync } from '../lib/hooks';
 import { useApp } from '../app/AppState';
 
 export function SettingsView() {
-  const { revision } = useApp();
+  const { revision, navigate } = useApp();
   const health = useAsync(() => api.health(), [revision]);
   const info = useAsync(() => api.info(), [revision]);
   const sources = useAsync(() => api.jobs.sources(), [revision]);
@@ -29,6 +29,9 @@ export function SettingsView() {
           </p>
         </div>
         <div className="spacer" />
+        <Button icon="shield" variant="secondary" onClick={() => navigate('diagnostics')}>
+          Diagnostics
+        </Button>
         <Button icon="refresh" onClick={() => { health.reload(); info.reload(); }}>
           Re-check
         </Button>
@@ -65,9 +68,17 @@ export function SettingsView() {
                 />
 
                 {health.data.llm.status !== 'healthy' && (
-                  <Notice tone="warn">
+                  <Notice
+                    tone="warn"
+                    action={
+                      <Button size="sm" icon="shield" onClick={() => navigate('diagnostics')}>
+                        Diagnostics
+                      </Button>
+                    }
+                  >
                     The product works without the model. Scores fall back to the deterministic
                     calculation and documents come from templates, and both say which path they took.
+                    Diagnostics names the model that is missing and the command that installs it.
                   </Notice>
                 )}
               </>
@@ -82,12 +93,13 @@ export function SettingsView() {
               <Skeleton height={120} />
             ) : info.data ? (
               <>
-                <InfoRow label="Data folder" value={String(info.data.data_dir)} mono />
-                <InfoRow label="Database" value={String(info.data.database)} mono />
-                <InfoRow label="Model provider" value={String(info.data.llm_provider)} />
-                <InfoRow label="Model" value={String(info.data.llm_model)} mono />
-                <InfoRow label="Python" value={String(info.data.python)} mono />
-                <InfoRow label="Platform" value={String(info.data.platform)} />
+                <InfoRow label="Data folder" value={info.data.data_dir} mono />
+                <InfoRow label="Database" value={info.data.database.path || info.data.database.url} mono />
+                <InfoRow label="Log folder" value={info.data.logs.dir} mono />
+                <InfoRow label="Model provider" value={info.data.llm_provider} />
+                <InfoRow label="Model" value={info.data.llm_model} mono />
+                <InfoRow label="Python" value={info.data.python} mono />
+                <InfoRow label="Platform" value={info.data.platform} />
                 <Notice tone="info">
                   Everything stays on this machine. The application talks to job boards to read
                   postings and to your local model, and to nothing else.

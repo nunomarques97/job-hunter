@@ -35,13 +35,33 @@ fn backend_log_tail(count: usize) -> LogTail {
     }
 }
 
+/// Open the log directory in the file manager.
+///
+/// The directory rather than the file: the panel already shows the tail of
+/// today's log, and what a person opening this actually wants is yesterday's
+/// file, or all seven of them to attach somewhere. The path is the shell's own,
+/// never one the renderer supplies, so nothing the page can say decides what
+/// gets opened.
+#[tauri::command]
+fn open_log_folder() -> Result<String, String> {
+    let directory = logging::log_dir();
+    // A first run can reach this before anything has been written.
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    tauri_plugin_opener::open_path(&directory, None::<&str>).map_err(|error| error.to_string())?;
+    Ok(directory.to_string_lossy().into_owned())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(BackendState::default())
-        .invoke_handler(tauri::generate_handler![backend_status, backend_log_tail])
+        .invoke_handler(tauri::generate_handler![
+            backend_status,
+            backend_log_tail,
+            open_log_folder
+        ])
         .setup(|app| {
             logging::shell("Job Hunter is starting");
 

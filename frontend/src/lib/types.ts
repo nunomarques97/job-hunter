@@ -329,6 +329,59 @@ export interface Health {
   llm: { status: string; provider: string; model: string; detail: string };
 }
 
+/** A file the backend reports on: where it is, whether it is there, how big. */
+export interface FileFacts {
+  path: string;
+  exists: boolean;
+  size_bytes: number;
+}
+
+/** One stage that calls the model, and the tag it will call. */
+export interface ModelStage {
+  stage: string;
+  label: string;
+  model: string;
+  /** True when this stage is pinned to a tag of its own rather than running on
+   *  the default. */
+  pinned: boolean;
+  /** `null` when the runtime did not answer: nothing can be claimed about a tag
+   *  when the thing that would hold it is unreachable. */
+  installed: boolean | null;
+  pull_command: string;
+}
+
+export interface ModelStatus {
+  provider: string;
+  base_url: string;
+  endpoint: string;
+  reachable: boolean;
+  detail: string;
+  default_model: string;
+  num_ctx: number;
+  installed_models: string[];
+  stages: ModelStage[];
+  missing_models: string[];
+  pull_commands: string[];
+}
+
+/** Everything the backend knows about where and how it is running. */
+export interface SystemInfo {
+  app_name: string;
+  version: string;
+  python: string;
+  python_executable: string;
+  platform: string;
+  data_dir: string;
+  port: number;
+  database: FileFacts & { url: string };
+  logs: FileFacts & { dir: string };
+  llm: ModelStatus;
+  llm_provider: string;
+  llm_model: string;
+  sources: SourceInfo[];
+  jobs_stored: boolean;
+}
+
 export interface DiscoveryResponse {
   created: number;
   updated: number;

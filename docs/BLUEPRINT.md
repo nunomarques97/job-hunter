@@ -1632,7 +1632,7 @@ PyInstaller returns only if the tool is ever given to someone else. It is a V2 l
 | TASK 049 (code signing) | saves ~€300/yr; he clicks through SmartScreen once, or just runs `tauri dev` |
 | The six-step first-run wizard (§15.1) | the Profile screen already exists and is good. Fill it once, set targets, done. A wizard for an audience of one is ceremony. |
 | Demo mode (TASK 024 as specified) | **simplify: delete `sources/sample.py` outright.** He does not need example data; he needs the 5 fake jobs out of his analytics. |
-| Backup / restore / factory reset | a scheduled `copy` of `%LOCALAPPDATA%\JobHunter\jobhunter.db` is the whole feature |
+| Backup / restore / factory reset | a scheduled `copy` of `%LOCALAPPDATA%\JobHunter\job_hunter.db` is the whole feature — the code has never produced the `jobhunter.db` spelling this line used to carry |
 | Full WCAG / axe / screen-reader work (most of TASK 043) | **keep** the contrast token fix (3 lines, pure readability) and **keep** keyboard operability (that is speed, not accessibility). **Drop** `aria-live`, focus traps, `tabpanel` wiring, axe in CI. |
 | Multi-profile support | one profile |
 | macOS build | one Windows machine |
@@ -1654,12 +1654,14 @@ Per the standing rule that the PO decides what the PO can decide. This section c
 | # | Decision | Closed as |
 |---|---|---|
 | OD-2 | Portuguese national boards | **Deferred, not rejected.** Adzuna's `pt` endpoint (official API, free tier) goes into TASK 022 and covers a meaningful slice of the same inventory legitimately. ITJobs / Landing.jobs / Net-Empregos are revisited *after* TASK 022 ships, and only if the ≥30-relevant-postings bar is missed. If revisited, the first step is checking for an official API or feed — at ten requests a day on a personal tool the practical exposure is an IP block rather than anything legal, but the honest route is still the route we take first. |
-| OD-3 | Default model | **~8B instruct at `num_ctx 16384`, with a per-stage override.** If the Sponsor's GPU comfortably runs the 30B he pins it to `cover_letter` and `tailor_cv` in Settings and leaves scoring on the 8B — best of both, and it costs nothing to support. The `Modelfile` is deleted; `num_ctx` goes per request. |
+| OD-3 | Default model | **`qwen3:14b` at `num_ctx 16384`, with a per-stage override** (amended TASK 005, replacing the `qwen3:8b` default): scoring runs over a cached shortlist rather than every posting, so the throughput argument for an 8B was never binding, and `qwen3:14b` is already installed on the only machine that runs this while `qwen3:8b` is not. The per-stage override is unchanged, so the 30B can still be pinned to `cover_letter` and `tailor_cv`. The `Modelfile` is deleted; `num_ctx` goes per request. |
 | OD-4 | Code signing | **Dropped.** |
 | OD-6 | PDF engine | **WeasyPrint.** With PyInstaller gone this is a plain `pip install` and carries no packaging risk. Typst stays a V2 upgrade if the output disappoints. |
 | OD-7 | The `legacy/` directory | **Delete it.** 21 superseded test scripts and a duplicate backend skeleton that confuse every search of the repository. |
 
 Nothing is now blocked on the Sponsor. Phase A can start.
+
+**Open item, not a decision (raised TASK 005, owned by TASK 013):** the live database holds two candidate rows where a single-profile product allows exactly one; TASK 013 must resolve the duplicate and add a constraint enforcing one, because every generated document is rendered from profile fields and an arbitrary pick is a truthfulness defect. Tracked in `docs/STATE.md`.
 
 ## 19.6 Revised MVP
 

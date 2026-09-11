@@ -1,24 +1,25 @@
 /** The application shell: navigation rail, command bar and page host. */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 
 import { Icon } from '../components/Icon';
-import { Button, Spinner } from '../components/ui';
+import { Button, Spinner, Toasts } from '../components/ui';
 import { api } from '../lib/api';
 import { useAsync, useKeyboardShortcut } from '../lib/hooks';
-import { NAV, useApp, type ViewId } from './AppState';
+import { NAV, RAIL_PARENT, useApp, type ViewId } from './AppState';
 
 import { ActivityView } from '../views/ActivityView';
 import { AnalyticsView } from '../views/AnalyticsView';
 import { ApplicationsView } from '../views/ApplicationsView';
 import { AutomationView } from '../views/AutomationView';
 import { DashboardView } from '../views/DashboardView';
+import { DiagnosticsView } from '../views/DiagnosticsView';
 import { DocumentsView } from '../views/DocumentsView';
 import { EmailView } from '../views/EmailView';
 import { JobsView } from '../views/JobsView';
 import { ProfileView } from '../views/ProfileView';
 import { SettingsView } from '../views/SettingsView';
 
-const VIEWS: Record<ViewId, () => JSX.Element | null> = {
+const VIEWS: Record<ViewId, ComponentType> = {
   dashboard: DashboardView,
   jobs: JobsView,
   applications: ApplicationsView,
@@ -29,6 +30,7 @@ const VIEWS: Record<ViewId, () => JSX.Element | null> = {
   profile: ProfileView,
   activity: ActivityView,
   settings: SettingsView,
+  diagnostics: DiagnosticsView,
 };
 
 export function Shell() {
@@ -75,6 +77,9 @@ export function Shell() {
   };
 
   const View = VIEWS[view];
+  // Diagnostics has no rail item of its own, so the item it belongs under stays
+  // lit rather than the rail going blank.
+  const railView = RAIL_PARENT[view] ?? view;
   const isRunning = automation.data?.is_running ?? false;
   const name = profile.data?.full_name?.trim() || 'Your profile';
   const initials = name
@@ -104,10 +109,10 @@ export function Shell() {
           {NAV.map((item) => (
             <button
               key={item.id}
-              className={`rail-item ${view === item.id ? 'active' : ''}`}
+              className={`rail-item ${railView === item.id ? 'active' : ''}`}
               onClick={() => navigate(item.id)}
               title={collapsed ? item.label : undefined}
-              aria-current={view === item.id ? 'page' : undefined}
+              aria-current={railView === item.id ? 'page' : undefined}
             >
               <Icon name={item.icon} size={18} />
               {!collapsed && <span className="truncate">{item.label}</span>}
@@ -209,32 +214,7 @@ export function Shell() {
         </main>
       </div>
 
-      <div className="toasts">
-        {toasts.map((toast) => (
-          <div key={toast.id} className="toast">
-            <Icon
-              name={toast.tone === 'danger' ? 'alert' : toast.tone === 'success' ? 'check' : 'info'}
-              size={16}
-              color={
-                toast.tone === 'danger'
-                  ? 'var(--status-danger)'
-                  : toast.tone === 'success'
-                    ? 'var(--status-success)'
-                    : toast.tone === 'warn'
-                      ? 'var(--status-warn)'
-                      : 'var(--status-info)'
-              }
-              style={{ marginTop: 1 }}
-            />
-            <span className="t-small" style={{ flex: 1 }}>
-              {toast.message}
-            </span>
-            <button onClick={() => dismiss(toast.id)} title="Dismiss" style={{ color: 'var(--text-muted)' }}>
-              <Icon name="close" size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
+      <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }

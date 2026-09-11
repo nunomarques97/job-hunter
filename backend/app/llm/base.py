@@ -36,6 +36,25 @@ class ModelInfo:
 
 
 @dataclass
+class ProviderStatus:
+    """What the runtime itself reports, separately from any one model.
+
+    Two questions are being answered and they have different answers: whether
+    the runtime is reachable at all, and which models it actually holds. Folding
+    them into a single boolean is what made "Model offline" useless — it cannot
+    tell a stopped Ollama from a running one that simply does not have the
+    configured tag, and only the second has a one-command fix.
+    """
+
+    provider: str
+    base_url: str
+    endpoint: str
+    reachable: bool
+    detail: str
+    installed: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Message:
     role: str
     content: str
@@ -123,6 +142,19 @@ class LLMProvider(ABC):
     @abstractmethod
     async def info(self) -> ModelInfo:
         """Describe the provider, including whether it answered just now."""
+
+    @abstractmethod
+    async def status(self) -> ProviderStatus:
+        """Describe the runtime and every model installed in it."""
+
+    def install_command(self, model: str) -> str:
+        """The exact command that installs ``model``, or "" if there is none.
+
+        The diagnostic panel prints this verbatim. A missing model is the one
+        failure in this product with a single-line fix, and a panel that names
+        the problem without naming the command still costs an evening.
+        """
+        return ""
 
     async def aclose(self) -> None:  # pragma: no cover - trivial
         return None

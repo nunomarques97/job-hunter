@@ -197,6 +197,41 @@ impl fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
+/// Where the backend process came from.
+///
+/// This is not a detail. A backend this shell started is a child it owns: it
+/// dies with the window, supervision can restart it, and its stdout is piped
+/// into the shell's log file. A backend that was already listening when the
+/// window opened is none of those things — there is no child handle, so it
+/// outlives the window, cannot be restarted, and writes to whatever terminal
+/// started it rather than to the log. The diagnostic panel has to tell the two
+/// apart, because otherwise it shows a healthy backend beside a silent log and
+/// sends the user to debug a problem that does not exist.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    /// Not settled yet. The port decision or the spawn is still in flight.
+    Pending,
+    /// This shell started the process and holds its handle.
+    Spawned,
+    /// A Job Hunter backend was already serving on the port and was attached
+    /// to. It belongs to whoever started it.
+    Adopted,
+}
+
+/// The pair the shell resolved, and whether it is the pair actually running.
+#[derive(Debug, Clone, Serialize)]
+pub struct Resolved {
+    /// The Python interpreter.
+    pub interpreter: String,
+    /// The backend package it was found beside.
+    pub package: String,
+    /// False when the backend was adopted: the pair is what this shell *would*
+    /// have used, not what is running. Saying so is the difference between a
+    /// useful path and a misleading one.
+    pub in_use: bool,
+}
+
 /// What the shell can report about the backend right now.
 ///
 /// The window is on screen before any of this is decided, so the renderer asks
@@ -206,9 +241,25 @@ impl std::error::Error for StartError {}
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum BackendStatus {
-    Starting { port: u16 },
-    Ready { port: u16 },
-    Failed { port: u16, failure: StartFailure },
+    Starting {
+        port: u16,
+        provenance: Provenance,
+        logs_captured: bool,
+        resolved: Option<Resolved>,
+    },
+    Ready {
+        port: u16,
+        provenance: Provenance,
+        logs_captured: bool,
+        resolved: Option<Resolved>,
+    },
+    Failed {
+        port: u16,
+        provenance: Provenance,
+        logs_captured: bool,
+        resolved: Option<Resolved>,
+        failure: StartFailure,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +282,10 @@ pub struct BackendState {
     phase: Mutex<Phase>,
     /// What `decide_port` settled on. `None` until it has run.
     decision: Mutex<Option<PortChoice>>,
+    /// Whether the running backend was started here or attached to.
+    provenance: Mutex<Provenance>,
+    /// The interpreter and package pair, once one has been resolved.
+    resolved: Mutex<Option<Resolved>>,
 }
 
 impl Default for BackendState {
@@ -240,6 +295,8 @@ impl Default for BackendState {
             port: Mutex::new(DEFAULT_PORT),
             phase: Mutex::new(Phase::Starting),
             decision: Mutex::new(None),
+            provenance: Mutex::new(Provenance::Pending),
+            resolved: Mutex::new(None),
         }
     }
 }
@@ -258,11 +315,30 @@ impl BackendState {
     /// What to tell the renderer.
     pub fn status(&self) -> BackendStatus {
         let port = *self.port.lock().unwrap();
+        let provenance = *self.provenance.lock().unwrap();
+        let resolved = self.resolved.lock().unwrap().clone();
+        // Only a process this shell spawned has its pipes read into the log
+        // file. An adopted one writes wherever it was started from, and the
+        // panel says so rather than presenting an empty log as a symptom.
+        let logs_captured = provenance == Provenance::Spawned;
         match &*self.phase.lock().unwrap() {
-            Phase::Starting => BackendStatus::Starting { port },
-            Phase::Ready => BackendStatus::Ready { port },
+            Phase::Starting => BackendStatus::Starting {
+                port,
+                provenance,
+                logs_captured,
+                resolved,
+            },
+            Phase::Ready => BackendStatus::Ready {
+                port,
+                provenance,
+                logs_captured,
+                resolved,
+            },
             Phase::Failed(error) => BackendStatus::Failed {
                 port,
+                provenance,
+                logs_captured,
+                resolved,
                 failure: error.present(),
             },
         }
@@ -270,6 +346,18 @@ impl BackendState {
 
     fn set_phase(&self, phase: Phase) {
         *self.phase.lock().unwrap() = phase;
+    }
+
+    fn set_provenance(&self, provenance: Provenance) {
+        *self.provenance.lock().unwrap() = provenance;
+    }
+
+    fn set_resolved(&self, package: &Path, interpreter: &Path, in_use: bool) {
+        *self.resolved.lock().unwrap() = Some(Resolved {
+            interpreter: readable(interpreter),
+            package: readable(package),
+            in_use,
+        });
     }
 }
 
@@ -653,7 +741,20 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
         // A backend of ours is already serving there, usually one the developer
         // started by hand. It belongs to whoever started it, so it is adopted
         // and deliberately not supervised.
-        Some(PortChoice::Adopt(port)) => return Ok(port),
+        Some(PortChoice::Adopt(port)) => {
+            state.set_provenance(Provenance::Adopted);
+            // The pair is resolved anyway and recorded as not in use. The panel
+            // then has paths to show without claiming they are the ones the
+            // running process was started with, which the shell cannot know.
+            if let Ok((backend, python)) = resolve(app) {
+                state.set_resolved(&backend, &python, false);
+            }
+            logging::shell(
+                "attached to a backend this shell did not start: it is not stopped on exit, \
+                 cannot be restarted, and its output does not reach this log",
+            );
+            return Ok(port);
+        }
         Some(PortChoice::Spawn(port)) => port,
         // Only reachable from a test that never called decide_port().
         None => *state.port.lock().unwrap(),
@@ -662,6 +763,8 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
     // Resolved before anything is spawned, so a missing environment costs a
     // few file system checks rather than a process and a timeout.
     let (backend, python) = resolve(app)?;
+    state.set_provenance(Provenance::Spawned);
+    state.set_resolved(&backend, &python, true);
 
     let mut command = Command::new(&python);
     command

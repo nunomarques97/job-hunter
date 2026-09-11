@@ -6,12 +6,25 @@ No server, no network, no model. Run with:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import sys
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Set before anything reads the settings, which are cached on first use. The
+# route tests below start the real application, and it must not touch the real
+# database, the real data directory or the real log file.
+_DATA_DIR = Path(tempfile.mkdtemp(prefix="job-hunter-tests-"))
+os.environ["JOB_HUNTER_DATA_DIR"] = str(_DATA_DIR)
+# The model provider is replaced with a fake one further down. Naming it here,
+# before the settings are built, is what keeps this suite off the network.
+os.environ["JOB_HUNTER_LLM_PROVIDER"] = "fake"
+os.environ["JOB_HUNTER_OLLAMA_MODEL_COVER_LETTER"] = "pinned-model:30b"
 
 from app.core.logging import MASK, Redactor, redact_text  # noqa: E402
 from app.db.base import utcnow  # noqa: E402
@@ -328,6 +341,183 @@ check(
     redact_text("database ready at C:/Users/example/AppData")
     == "database ready at C:/Users/example/AppData",
 )
+
+
+# -- the diagnostic panel: /api/info and the copied report ----------------------
+
+group("Diagnostics")
+
+from app.core.config import LLM_STAGES, get_settings  # noqa: E402
+from app.llm import register_provider  # noqa: E402
+from app.llm.base import LLMProvider, ModelInfo, ProviderStatus  # noqa: E402
+
+
+class FakeProvider(LLMProvider):
+    """A model runtime that is reachable and holds exactly one tag.
+
+    The panel's whole point is telling apart a runtime that is down from one
+    that is up without the configured model, so the fake is deliberately the
+    second case: it has a model, just not the one anything is configured to use.
+    """
+
+    installed = ["something-else:7b"]
+
+    def __init__(self, model: str | None = None) -> None:
+        self.model = model or get_settings().ollama_model
+
+    async def complete(self, system, user, *, temperature=0.2, max_tokens=None):
+        raise NotImplementedError
+
+    async def complete_json(self, system, user, *, temperature=0.1):
+        raise NotImplementedError
+
+    async def info(self) -> ModelInfo:
+        return ModelInfo(
+            provider="fake",
+            model=self.model,
+            endpoint="fake://tags",
+            available=self.model in self.installed,
+            detail="",
+        )
+
+    async def status(self) -> ProviderStatus:
+        return ProviderStatus(
+            provider="fake",
+            base_url="fake://runtime",
+            endpoint="fake://tags",
+            reachable=True,
+            detail="A fake runtime, for the tests.",
+            installed=list(self.installed),
+        )
+
+    def install_command(self, model: str) -> str:
+        return f"ollama pull {model}"
+
+
+register_provider("fake", FakeProvider)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.api.system import DiagnosticsRequest, diagnostics_report  # noqa: E402
+from app.main import app as application  # noqa: E402
+
+settings = get_settings()
+
+check("the default model is qwen3:14b", settings.ollama_model == "qwen3:14b", settings.ollama_model)
+check("the context window is 16384", settings.ollama_num_ctx == 16384, str(settings.ollama_num_ctx))
+check(
+    "an unpinned stage runs on the default",
+    settings.model_for("scoring") == "qwen3:14b",
+    settings.model_for("scoring"),
+)
+check(
+    "a pinned stage runs on its own tag",
+    settings.model_for("cover_letter") == "pinned-model:30b",
+    settings.model_for("cover_letter"),
+)
+
+with TestClient(application) as client:
+    payload = client.get("/api/info").json()
+
+    for field in ("app_name", "version", "python", "platform", "data_dir", "port"):
+        check(f"/api/info reports {field}", bool(payload.get(field) not in (None, "")), repr(payload.get(field)))
+
+    database = payload.get("database") or {}
+    check("/api/info reports the database path", bool(database.get("path")), repr(database))
+    check("/api/info says whether the database file exists", "exists" in database)
+    check("/api/info reports the database size", isinstance(database.get("size_bytes"), int))
+    check(
+        "the database file is the one the settings resolve to",
+        database.get("path", "").endswith("job_hunter.db"),
+        database.get("path", ""),
+    )
+
+    logs = payload.get("logs") or {}
+    check("/api/info reports the log directory", bool(logs.get("dir")), repr(logs))
+    check("/api/info reports today's log file", logs.get("path", "").endswith(".log"), repr(logs))
+    check("/api/info says whether the log file exists", "exists" in logs)
+    check(
+        "the log directory is inside the data directory",
+        str(_DATA_DIR) in logs.get("dir", ""),
+        logs.get("dir", ""),
+    )
+
+    llm = payload.get("llm") or {}
+    check("/api/info reports whether the model runtime answered", llm.get("reachable") is True)
+    check(
+        "/api/info lists the models actually installed",
+        llm.get("installed_models") == ["something-else:7b"],
+        repr(llm.get("installed_models")),
+    )
+
+    stages = {entry["stage"]: entry for entry in llm.get("stages", [])}
+    check(
+        "/api/info names a model for every stage",
+        set(stages) == {stage for stage, _ in LLM_STAGES},
+        repr(sorted(stages)),
+    )
+    check(
+        "an unpinned stage reports the default model",
+        stages.get("scoring", {}).get("model") == "qwen3:14b",
+        repr(stages.get("scoring")),
+    )
+    check(
+        "a pinned stage reports its own model",
+        stages.get("cover_letter", {}).get("model") == "pinned-model:30b",
+        repr(stages.get("cover_letter")),
+    )
+    check("a pinned stage is marked as pinned", stages.get("cover_letter", {}).get("pinned") is True)
+    check(
+        "a configured model that is not installed is reported as missing",
+        stages.get("scoring", {}).get("installed") is False,
+        repr(stages.get("scoring")),
+    )
+    check(
+        "a missing model carries the command that installs it",
+        stages.get("scoring", {}).get("pull_command") == "ollama pull qwen3:14b",
+        repr(stages.get("scoring", {}).get("pull_command")),
+    )
+    check(
+        "every missing model is named once",
+        llm.get("missing_models") == ["pinned-model:30b", "qwen3:14b"],
+        repr(llm.get("missing_models")),
+    )
+
+    check("/api/info lists the job sources", isinstance(payload.get("sources"), list))
+    check("/api/info says whether any job is stored", isinstance(payload.get("jobs_stored"), bool))
+
+    # -- what the "Copy diagnostics" button produces ---------------------------
+    secret_line = "state ready password=hunter2 token=abcdef123456"
+    body = "CANDIDATE SUMMARY. Engineer with a decade of delivery experience. " * 30
+    report = client.post(
+        "/api/diagnostics",
+        json={"shell": [secret_line], "log": [f"2026-09-11 10:00:00Z BACKEND stored {body}"]},
+    ).json()["text"]
+
+    check("the copied report is text", isinstance(report, str) and len(report) > 0)
+    check("the copied report carries no password", "hunter2" not in report, report[:200])
+    check("the copied report carries no token", "abcdef123456" not in report, report[:200])
+    check("the masking is visible in the copied report", MASK in report)
+    check(
+        "a document body does not reach the clipboard whole",
+        "truncated" in report and report.count("delivery experience") < 10,
+        str(report.count("delivery experience")),
+    )
+    check("the copied report names the missing model", "qwen3:14b" in report)
+    check("the copied report carries the pull command", "ollama pull qwen3:14b" in report)
+    check("the copied report names the log file", "log file" in report)
+    check("the copied report keeps the shell section", "Desktop shell" in report)
+
+# The report is per line, so an ordinary long report is not truncated as a whole.
+long_report = asyncio.run(
+    diagnostics_report(DiagnosticsRequest(shell=[f"line {index}" for index in range(40)], log=[]))
+)
+check(
+    "a long report is not cut off as one string",
+    "line 39" in long_report,
+    long_report[-120:],
+)
+
 
 print(f"\n{'=' * 60}")
 print(f"{passed} passed, {len(failures)} failed")

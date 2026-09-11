@@ -19,11 +19,42 @@ declare global {
   }
 }
 
+/**
+ * Where the running backend came from.
+ *
+ * `spawned` is a child this shell owns. `adopted` is a backend that was already
+ * listening when the window opened, which the shell attached to and does not
+ * own: it survives the window, cannot be restarted, and its output goes
+ * wherever it was started from rather than into the shell's log file. The
+ * diagnostic panel has to say which of the two it is looking at.
+ */
+export type Provenance = 'pending' | 'spawned' | 'adopted';
+
+/** The interpreter and backend package the shell resolved as a pair. */
+export interface Resolved {
+  interpreter: string;
+  package: string;
+  /** False for an adopted backend: this is the pair the shell *would* have
+   *  used, not the one that is running. */
+  in_use: boolean;
+}
+
+/** Facts every backend state carries, whatever the state is. */
+interface BackendFacts {
+  port: number;
+  provenance: Provenance;
+  /** Whether this backend's output reaches the shell's log file. False for an
+   *  adopted process, which is why its log tail can be empty while it is
+   *  perfectly healthy. */
+  logs_captured: boolean;
+  resolved: Resolved | null;
+}
+
 /** What the shell knows about the backend process. */
 export type BackendStatus =
-  | { state: 'starting'; port: number }
-  | { state: 'ready'; port: number }
-  | { state: 'failed'; port: number; failure: StartFailure };
+  | ({ state: 'starting' } & BackendFacts)
+  | ({ state: 'ready' } & BackendFacts)
+  | ({ state: 'failed'; failure: StartFailure } & BackendFacts);
 
 /**
  * A failure as the shell describes it.
@@ -69,4 +100,15 @@ export function backendStatus(): Promise<BackendStatus | null> {
 
 export function backendLogTail(count = 60): Promise<LogTail | null> {
   return call<LogTail>('backend_log_tail', { count });
+}
+
+/**
+ * Open the log directory in the file manager.
+ *
+ * Resolves to the path that was opened, or `null` outside the desktop window
+ * and when the shell could not open it — the caller says so rather than
+ * claiming a folder appeared.
+ */
+export function openLogFolder(): Promise<string | null> {
+  return call<string>('open_log_folder');
 }

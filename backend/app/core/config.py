@@ -49,6 +49,27 @@ def default_data_dir() -> Path:
     return Path(os.path.expanduser("~")) / ".local" / "share" / "job-hunter"
 
 
+#: The stages that call the model, in the order the diagnostic panel lists
+#: them, each with the sentence a person reads. Every stage here is a real call
+#: site: nothing is listed that the code does not actually run.
+LLM_STAGES: tuple[tuple[str, str], ...] = (
+    ("scoring", "Scoring a posting"),
+    ("tailor_cv", "Tailoring the CV"),
+    ("cover_letter", "Writing a cover letter"),
+    ("cv_import", "Reading an uploaded CV"),
+)
+
+
+def _stage_models() -> dict[str, str]:
+    """Stage pins from the environment, holding only the ones that were set."""
+    pinned: dict[str, str] = {}
+    for stage, _ in LLM_STAGES:
+        value = _env(f"OLLAMA_MODEL_{stage.upper()}", "").strip()
+        if value:
+            pinned[stage] = value
+    return pinned
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "Job Hunter"
@@ -62,13 +83,21 @@ class Settings:
 
     llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "ollama"))
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
-    #: A stock ~8B instruct tag, pulled with one documented command and nothing
-    #: else. The previous default was ``qwen3-coder:30b-32k``, a tag no stock
+    #: A stock instruct tag, pulled with one documented command and nothing
+    #: else. The first default was ``qwen3-coder:30b-32k``, a tag no stock
     #: Ollama install has: it existed only if the user ran ``ollama create``
-    #: over the repository's ``Modelfile``, which nothing told them to do. It
-    #: was also a coding model being asked to write prose, and it wanted about
-    #: 20 GB. Override with ``JOB_HUNTER_OLLAMA_MODEL``.
-    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen3:8b"))
+    #: over the repository's ``Modelfile``, which nothing told them to do. The
+    #: second was ``qwen3:8b``, chosen for throughput — but scoring runs over a
+    #: cached shortlist rather than every posting, so throughput was never the
+    #: binding constraint, and 8b was not installed on the one machine that
+    #: runs this while 14b was. Blueprint OD-3. Override with
+    #: ``JOB_HUNTER_OLLAMA_MODEL``, or per stage with
+    #: ``JOB_HUNTER_OLLAMA_MODEL_<STAGE>``.
+    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen3:14b"))
+    #: Per-stage pins, holding only the stages that were actually overridden.
+    #: A 30B can be put on ``cover_letter`` and ``tailor_cv`` while scoring
+    #: stays on the default, which is the arrangement OD-3 describes.
+    stage_models: dict[str, str] = field(default_factory=lambda: _stage_models())
     #: Context window, sent with every request. It used to come from a
     #: ``PARAMETER num_ctx`` baked into a tag the user had to build by hand, so
     #: a stock tag silently ran at Ollama's much smaller default.
@@ -84,6 +113,17 @@ class Settings:
 
     default_daily_application_limit: int = field(default_factory=lambda: _env_int("DAILY_LIMIT", 25))
     default_min_score: float = field(default_factory=lambda: _env_float("MIN_SCORE", 70.0))
+
+    def model_for(self, stage: str | None = None) -> str:
+        """The model tag a stage runs on.
+
+        An unpinned stage runs on the default, and an unknown stage name is
+        treated as unpinned rather than as an error: the caller is asking which
+        model to use, not asserting that a stage exists.
+        """
+        if not stage:
+            return self.ollama_model
+        return self.stage_models.get(stage) or self.ollama_model
 
     @property
     def resolved_database_url(self) -> str:

@@ -8,7 +8,14 @@ import httpx
 
 from ..core.config import get_settings
 from ..core.logging import log_llm_call
-from .base import GenerationResult, LLMProvider, LLMUnavailable, ModelInfo, extract_json
+from .base import (
+    GenerationResult,
+    LLMProvider,
+    LLMUnavailable,
+    ModelInfo,
+    ProviderStatus,
+    extract_json,
+)
 
 
 class OllamaProvider(LLMProvider):
@@ -118,35 +125,76 @@ class OllamaProvider(LLMProvider):
         result = await self._chat(system, user, temperature=temperature, json_mode=True)
         return extract_json(result.text)
 
-    async def info(self) -> ModelInfo:
+    def install_command(self, model: str) -> str:
+        return f"ollama pull {model}"
+
+    async def status(self) -> ProviderStatus:
+        """Ask Ollama what it has, in one call.
+
+        The tag list is the whole answer: it says the runtime is up, and it says
+        which models it holds. Whether any particular tag is configured is a
+        question for the caller, not for here.
+        """
         endpoint = f"{self.base_url}/api/tags"
         try:
             response = await self._http().get("/api/tags", timeout=5.0)
             response.raise_for_status()
-            names = [item.get("name", "") for item in response.json().get("models", [])]
-        except httpx.HTTPError as exc:
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return ProviderStatus(
+                provider="ollama",
+                base_url=self.base_url,
+                endpoint=endpoint,
+                reachable=False,
+                detail=f"Ollama is not reachable at {self.base_url}: {exc}",
+                installed=[],
+            )
+
+        models = payload.get("models") if isinstance(payload, dict) else None
+        names = sorted(
+            str(item.get("name", "")).strip()
+            for item in (models or [])
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        )
+        return ProviderStatus(
+            provider="ollama",
+            base_url=self.base_url,
+            endpoint=endpoint,
+            reachable=True,
+            detail=(
+                f"Ollama is running with {len(names)} model{'' if len(names) == 1 else 's'} installed."
+                if names
+                else "Ollama is running but has no models installed."
+            ),
+            installed=names,
+        )
+
+    async def info(self) -> ModelInfo:
+        runtime = await self.status()
+        if not runtime.reachable:
             return ModelInfo(
                 provider="ollama",
                 model=self.model,
-                endpoint=endpoint,
+                endpoint=runtime.endpoint,
                 available=False,
                 detail=f"Ollama is not reachable at {self.base_url}.",
             )
-        if self.model not in names:
+        if self.model not in runtime.installed:
             return ModelInfo(
                 provider="ollama",
                 model=self.model,
-                endpoint=endpoint,
+                endpoint=runtime.endpoint,
                 available=False,
                 detail=(
                     f"Ollama is running but {self.model} is not pulled. "
-                    f"Available: {', '.join(names[:6]) or 'none'}."
+                    f"Run `{self.install_command(self.model)}`. "
+                    f"Installed: {', '.join(runtime.installed[:6]) or 'none'}."
                 ),
             )
         return ModelInfo(
             provider="ollama",
             model=self.model,
-            endpoint=endpoint,
+            endpoint=runtime.endpoint,
             available=True,
             detail="Ready.",
         )

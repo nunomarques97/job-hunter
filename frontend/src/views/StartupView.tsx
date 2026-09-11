@@ -3,17 +3,22 @@
  *
  * The window is on screen within a second of launch now, so something has to
  * be there. This is that something: the shell's own furniture in its loading
- * state, one card saying what is happening, and the log as it is written. When
- * the backend cannot start, the same card carries the reason and the remedy —
- * both written by the shell in Rust, never composed here, so the sentence in
- * the window is the sentence in the log.
+ * state, one card saying what is happening, and the log as it is written.
+ *
+ * Once waiting turns into a real problem — the shell reported a failure, or
+ * twenty seconds passed with no answer — the waiting card gives way to the
+ * diagnostic panel itself, rather than to a second, thinner version of it. The
+ * panel is the screen for a backend that is not there, and there is no reason
+ * to show anything less complete just because the app has not opened yet.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { Icon } from '../components/Icon';
-import { Button, Card, CardHead, Notice, Skeleton, Spinner } from '../components/ui';
+import { Card, CardHead, Notice, Skeleton, Spinner, Toasts } from '../components/ui';
 import { api } from '../lib/api';
-import { backendLogTail, backendStatus, inShell, type StartFailure } from '../lib/shell';
+import { useApp } from '../app/AppState';
+import { backendStatus, type StartFailure } from '../lib/shell';
+import { DiagnosticsView } from './DiagnosticsView';
 
 /** How often to ask whether the backend is up, while waiting for it. */
 const POLL_WAITING_MS = 400;
@@ -52,10 +57,9 @@ type Phase =
   | { kind: 'ready' };
 
 export function StartupView({ children }: { children: ReactNode }) {
+  const { toasts, dismiss } = useApp();
   const [phase, setPhase] = useState<Phase>({ kind: 'waiting' });
   const [elapsed, setElapsed] = useState(0);
-  const [log, setLog] = useState<string[]>([]);
-  const [logPath, setLogPath] = useState('');
 
   const began = useRef(Date.now());
   const misses = useRef(0);
@@ -130,23 +134,6 @@ export function StartupView({ children }: { children: ReactNode }) {
     return () => window.clearInterval(tick);
   }, [ready]);
 
-  useEffect(() => {
-    if (ready) return;
-    let live = true;
-    const read = async () => {
-      const tail = await backendLogTail(60);
-      if (!live || !tail) return;
-      setLog(tail.lines);
-      setLogPath(tail.path);
-    };
-    void read();
-    const timer = window.setInterval(() => void read(), 1000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, [ready]);
-
   const retry = () => {
     misses.current = 0;
     began.current = Date.now();
@@ -187,38 +174,25 @@ export function StartupView({ children }: { children: ReactNode }) {
         </header>
 
         <main className="page">
-          <div className="page-inner">
-            {phase.kind === 'failed' ? (
-              <FailureCard failure={phase.failure} onRetry={retry} log={log} logPath={logPath} />
-            ) : (
-              <WaitingCard
-                timedOut={phase.kind === 'timeout'}
-                elapsed={elapsed}
-                log={log}
-                logPath={logPath}
-                onRetry={retry}
-              />
-            )}
-          </div>
+          {phase.kind === 'waiting' ? (
+            <div className="page-inner">
+              <WaitingCard elapsed={elapsed} />
+            </div>
+          ) : (
+            // Failed, or twenty seconds with no answer. Either way the question
+            // has stopped being "is it nearly there" and started being "what is
+            // wrong", which is the panel's question.
+            <DiagnosticsView onRecheck={retry} />
+          )}
         </main>
       </div>
+
+      <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }
 
-function WaitingCard({
-  timedOut,
-  elapsed,
-  log,
-  logPath,
-  onRetry,
-}: {
-  timedOut: boolean;
-  elapsed: number;
-  log: string[];
-  logPath: string;
-  onRetry: () => void;
-}) {
+function WaitingCard({ elapsed }: { elapsed: number }) {
   return (
     <Card wash style={{ maxWidth: 720 }}>
       <CardHead
@@ -228,81 +202,14 @@ function WaitingCard({
         action={<Elapsed seconds={elapsed} />}
       />
       <div className="card-body col" style={{ gap: 16 }}>
-        {timedOut ? (
-          <Notice
-            tone="warn"
-            action={
-              <Button icon="refresh" size="sm" onClick={onRetry}>
-                Check again
-              </Button>
-            }
-          >
-            <div className="t-small">The local service has not answered in 20 seconds.</div>
-            <div className="t-caption secondary">
-              It may still be starting. The log below is the best clue to what it is doing.
-            </div>
-          </Notice>
-        ) : (
-          <div className="row" style={{ gap: 12 }}>
-            <Spinner size={16} />
-            <span className="t-small secondary">Waiting for the service to answer.</span>
-          </div>
-        )}
-        <LogTail lines={log} path={logPath} />
-      </div>
-    </Card>
-  );
-}
-
-function FailureCard({
-  failure,
-  onRetry,
-  log,
-  logPath,
-}: {
-  failure: StartFailure;
-  onRetry: () => void;
-  log: string[];
-  logPath: string;
-}) {
-  return (
-    <Card style={{ maxWidth: 720 }}>
-      <CardHead
-        icon="alert"
-        title={
-          failure.kind === 'stopped'
-            ? 'Job Hunter lost its local service'
-            : 'Job Hunter cannot start its local service'
-        }
-        subtitle="Nothing is lost. Your data is on disk and the window picks it up once the service runs."
-      />
-      <div className="card-body col" style={{ gap: 16 }}>
-        <Notice
-          tone="danger"
-          action={
-            <Button icon="refresh" size="sm" onClick={onRetry}>
-              Check again
-            </Button>
-          }
-        >
-          <div className="t-small">{failure.summary}</div>
-          <div className="t-caption secondary">{failure.remedy}</div>
+        <div className="row" style={{ gap: 12 }}>
+          <Spinner size={16} />
+          <span className="t-small secondary">Waiting for the service to answer.</span>
+        </div>
+        <Notice tone="info">
+          If it has not answered in twenty seconds this screen turns into Diagnostics, which says
+          what it was looking for and where.
         </Notice>
-
-        {failure.probed.length > 0 && (
-          <div className="col" style={{ gap: 8 }}>
-            <div className="t-overline muted">Looked at</div>
-            <div className="col" style={{ gap: 4 }}>
-              {failure.probed.map((path) => (
-                <div key={path} className="t-caption mono muted truncate" title={path}>
-                  {path}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <LogTail lines={log} path={logPath} />
       </div>
     </Card>
   );
@@ -313,38 +220,5 @@ function Elapsed({ seconds }: { seconds: number }) {
     <span className="t-caption mono muted" title="Time since this window opened">
       {seconds.toFixed(1)}s
     </span>
-  );
-}
-
-function LogTail({ lines, path }: { lines: string[]; path: string }) {
-  const bottom = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    bottom.current?.scrollTo({ top: bottom.current.scrollHeight });
-  }, [lines]);
-
-  return (
-    <div className="col" style={{ gap: 8 }}>
-      <div className="row" style={{ gap: 8 }}>
-        <span className="t-overline muted">Service log</span>
-        <div className="spacer" />
-        {path && (
-          <span className="t-caption mono muted truncate" title={path} style={{ maxWidth: 380 }}>
-            {path}
-          </span>
-        )}
-      </div>
-      <div className="logtail t-caption mono" ref={bottom}>
-        {lines.length === 0 ? (
-          <span className="muted">
-            {inShell()
-              ? 'Nothing written yet.'
-              : 'The log is only readable from the desktop window.'}
-          </span>
-        ) : (
-          lines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)
-        )}
-      </div>
-    </div>
   );
 }

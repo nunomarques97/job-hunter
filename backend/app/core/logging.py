@@ -20,7 +20,11 @@ import logging
 import re
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+from .config import get_settings
 
 # Anything whose name looks like this has its value masked, wherever it appears.
 SECRET_NAMES = (
@@ -42,6 +46,26 @@ SECRET_NAMES = (
 )
 
 MASK = "***"
+
+
+def log_dir() -> Path:
+    """The directory holding every log file.
+
+    The desktop shell owns these files: it creates them, rotates them and
+    decides how many are kept. The backend only writes to a stream. This
+    computes the same location the shell does, from the same data directory, so
+    the diagnostic panel can name the file without asking the shell — and it
+    reports whether the file is actually there rather than assuming it.
+    ``src-tauri/src/logging.rs`` holds the other half of the convention.
+    """
+    return get_settings().data_dir / "logs"
+
+
+def current_log_path() -> Path:
+    """Today's log file, named as the shell names it. UTC, like the lines."""
+    today = datetime.now(timezone.utc)
+    return log_dir() / f"backend-{today:%Y-%m-%d}.log"
+
 
 # The longest a single log message may be. A CV, a cover letter and a job
 # description are all far longer than this, so a body cannot be logged whole

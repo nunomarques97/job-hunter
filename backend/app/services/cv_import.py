@@ -334,7 +334,7 @@ async def extract_profile(text: str) -> ImportPreview:
     baseline = extract_heuristic(text)
 
     try:
-        payload = await get_llm().complete_json(
+        payload = await get_llm("cv_import").complete_json(
             _IMPORT_SYSTEM,
             wrap_untrusted("cv_text", text, 20000),
         )

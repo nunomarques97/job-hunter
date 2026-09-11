@@ -32,6 +32,7 @@ import type {
   Overview,
   Page,
   SourceInfo,
+  SystemInfo,
 } from './types';
 
 /**
@@ -171,7 +172,18 @@ export interface JobQuery {
 
 export const api = {
   health: () => get<Health>('/health'),
-  info: () => get<Record<string, unknown>>('/info'),
+  info: () => get<SystemInfo>('/info'),
+
+  /**
+   * The diagnostic report, as text to put on the clipboard.
+   *
+   * Assembled by the backend rather than here, because every line has to leave
+   * through the redaction filter in `app/core/logging.py` — the same one the
+   * log writes through. The shell's own facts and the log tail are posted in so
+   * that they go through it too.
+   */
+  diagnostics: (shell: string[], log: string[]) =>
+    post<{ text: string }>('/diagnostics', { shell, log }),
 
   profile: {
     read: () => get<Candidate>('/profile/'),

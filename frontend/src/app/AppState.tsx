@@ -29,7 +29,8 @@ export type ViewId =
   | 'email'
   | 'profile'
   | 'activity'
-  | 'settings';
+  | 'settings'
+  | 'diagnostics';
 
 export interface NavItem {
   id: ViewId;
@@ -72,7 +73,17 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
-const VIEW_IDS = new Set<string>(NAV.map((item) => item.id));
+/**
+ * Diagnostics is a real view with its own location, reached from Settings and
+ * from the startup screen, but it is deliberately not in the rail: it is a
+ * screen for when something is wrong, not the eleventh thing to do every day.
+ */
+const OFF_RAIL: ViewId[] = ['diagnostics'];
+
+/** Which rail item is highlighted for a view that has no rail item of its own. */
+export const RAIL_PARENT: Partial<Record<ViewId, ViewId>> = { diagnostics: 'settings' };
+
+const VIEW_IDS = new Set<string>([...NAV.map((item) => item.id), ...OFF_RAIL]);
 
 /** The view named in the location hash, so the window reopens where it was left
  *  and a screen can be linked to directly. */

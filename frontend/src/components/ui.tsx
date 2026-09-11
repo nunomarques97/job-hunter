@@ -460,6 +460,63 @@ export function TagInput({
   );
 }
 
+/* ---------- Toasts ---------- */
+
+/**
+ * The toast stack.
+ *
+ * Here rather than in the application shell because it has to appear on two
+ * screens that do not share a parent: the app itself, and the startup screen
+ * that stands in for it while the backend is down. That second one is where a
+ * toast matters most — it is the only feedback the diagnostic panel has when it
+ * copies a report — and centralising it is also what keeps the deferred
+ * accessibility work (blueprint rule 3) a single edit rather than a hunt.
+ */
+export function Toasts({
+  toasts,
+  onDismiss,
+}: {
+  toasts: { id: number; tone: 'info' | 'success' | 'warn' | 'danger'; message: string }[];
+  onDismiss: (id: number) => void;
+}) {
+  const icon: Record<string, IconName> = {
+    info: 'info',
+    success: 'check',
+    warn: 'alert',
+    danger: 'alert',
+  };
+  const colour: Record<string, string> = {
+    info: 'var(--status-info)',
+    success: 'var(--status-success)',
+    warn: 'var(--status-warn)',
+    danger: 'var(--status-danger)',
+  };
+  return (
+    <div className="toasts">
+      {toasts.map((toast) => (
+        <div key={toast.id} className="toast">
+          <Icon
+            name={icon[toast.tone]}
+            size={16}
+            color={colour[toast.tone]}
+            style={{ marginTop: 1 }}
+          />
+          <span className="t-small" style={{ flex: 1 }}>
+            {toast.message}
+          </span>
+          <button
+            onClick={() => onDismiss(toast.id)}
+            title="Dismiss"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ---------- Tabs ---------- */
 
 export function Tabs({

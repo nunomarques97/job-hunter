@@ -12,40 +12,52 @@ from .base import (
     LLMUnavailable,
     Message,
     ModelInfo,
+    ProviderStatus,
     extract_json,
     wrap_untrusted,
 )
 from .ollama import OllamaProvider
 
+#: A provider class registered here takes an optional ``model`` keyword. That
+#: is the registry's only requirement beyond :class:`LLMProvider`, and it is
+#: what lets one stage be pinned to a different tag from another.
 _PROVIDERS: dict[str, type[LLMProvider]] = {"ollama": OllamaProvider}
 
-_instance: LLMProvider | None = None
+#: One instance per model tag. Stages that share a tag share the client and its
+#: connection pool; a pinned stage gets its own.
+_instances: dict[str, LLMProvider] = {}
 
 
 def register_provider(name: str, provider: type[LLMProvider]) -> None:
     _PROVIDERS[name] = provider
 
 
-def get_llm() -> LLMProvider:
-    """The process-wide provider instance."""
-    global _instance
-    if _instance is None:
-        settings = get_settings()
+def get_llm(stage: str | None = None) -> LLMProvider:
+    """The provider for ``stage``, or for the default model when unnamed.
+
+    Passing the stage is what keeps the diagnostic panel honest: the panel
+    reads the same ``model_for`` mapping, so the tag it names for a stage is
+    the tag that stage will really call.
+    """
+    settings = get_settings()
+    model = settings.model_for(stage)
+    instance = _instances.get(model)
+    if instance is None:
         factory = _PROVIDERS.get(settings.llm_provider)
         if factory is None:
             raise ValueError(
                 f"Unknown LLM provider {settings.llm_provider!r}. "
                 f"Known providers: {', '.join(sorted(_PROVIDERS))}."
             )
-        _instance = factory()
-    return _instance
+        instance = factory(model=model)  # type: ignore[call-arg]
+        _instances[model] = instance
+    return instance
 
 
 async def close_llm() -> None:
-    global _instance
-    if _instance is not None:
-        await _instance.aclose()
-        _instance = None
+    for instance in list(_instances.values()):
+        await instance.aclose()
+    _instances.clear()
 
 
 __all__ = [
@@ -55,6 +67,7 @@ __all__ = [
     "Message",
     "ModelInfo",
     "OllamaProvider",
+    "ProviderStatus",
     "close_llm",
     "extract_json",
     "get_llm",

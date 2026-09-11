@@ -321,7 +321,7 @@ async def refine_with_model(candidate: Candidate, job: Job, base: ScoreResult) -
     )
 
     try:
-        payload = await get_llm().complete_json(_SYSTEM, user)
+        payload = await get_llm("scoring").complete_json(_SYSTEM, user)
     except LLMUnavailable:
         return base
     except Exception:  # noqa: BLE001 - the model must never break scoring

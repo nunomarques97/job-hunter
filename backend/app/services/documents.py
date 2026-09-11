@@ -157,7 +157,7 @@ async def generate_tailored_cv(candidate: Candidate, job: Job) -> GeneratedDocum
     )
 
     try:
-        llm = get_llm()
+        llm = get_llm("tailor_cv")
         result = await llm.complete(_CV_SYSTEM, user, temperature=0.3)
     except (LLMUnavailable, Exception):  # noqa: BLE001 - templates are the fallback
         return GeneratedDocument(
@@ -248,7 +248,7 @@ async def generate_cover_letter(candidate: Candidate, job: Job) -> GeneratedDocu
     )
 
     try:
-        result = await get_llm().complete(_LETTER_SYSTEM, user, temperature=0.4)
+        result = await get_llm("cover_letter").complete(_LETTER_SYSTEM, user, temperature=0.4)
     except (LLMUnavailable, Exception):  # noqa: BLE001
         return GeneratedDocument(
             content=render_cover_letter_template(candidate, job),
