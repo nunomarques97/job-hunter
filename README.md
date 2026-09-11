@@ -65,6 +65,19 @@ denominator, and marked when there is too little data to mean anything.
   The product works without it: scores fall back to the deterministic
   calculation, documents come from templates, and both say which path they took.
 
+The default model is `qwen3:8b` — about 5 GB, and enough for selecting,
+ordering and rephrasing facts the code supplies. Pull it once:
+
+```bash
+ollama pull qwen3:8b
+```
+
+That is the whole model setup. The context window is sent with every request,
+so there is no `ollama create` step and no locally built tag to keep in sync.
+To use a different model, set `JOB_HUNTER_OLLAMA_MODEL`; to change the context
+window, set `JOB_HUNTER_OLLAMA_NUM_CTX`. Settings names the model in use and
+says plainly when it is not available.
+
 ## Setting up
 
 Two steps, once:

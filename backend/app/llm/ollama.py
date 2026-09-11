@@ -17,11 +17,13 @@ class OllamaProvider(LLMProvider):
         base_url: str | None = None,
         model: str | None = None,
         timeout: float | None = None,
+        num_ctx: int | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.model = model or settings.ollama_model
         self.timeout = timeout or settings.llm_timeout_seconds
+        self.num_ctx = num_ctx or settings.ollama_num_ctx
         self._client: httpx.AsyncClient | None = None
 
     def _http(self) -> httpx.AsyncClient:
@@ -45,7 +47,12 @@ class OllamaProvider(LLMProvider):
         json_mode: bool,
         max_tokens: int | None = None,
     ) -> GenerationResult:
-        options: dict[str, Any] = {"temperature": temperature}
+        # The context window travels with the request. It used to live in a
+        # ``PARAMETER num_ctx`` inside a Modelfile the user had to run
+        # ``ollama create`` over, which meant a stock tag quietly ran at
+        # Ollama's default window and long job descriptions were truncated
+        # without anything saying so.
+        options: dict[str, Any] = {"temperature": temperature, "num_ctx": self.num_ctx}
         if max_tokens:
             options["num_predict"] = max_tokens
         payload: dict[str, Any] = {

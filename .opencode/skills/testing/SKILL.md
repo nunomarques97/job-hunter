@@ -1,32 +1,27 @@
 ---
 name: testing
-description: Testing and regression standards for the Job Hunter application.
+description: The suites this project actually has, and how to use them.
 ---
 
-Test important business logic.
+```
+npm run test:backend    # offline unit tests, no network, no model, no server
+npm run typecheck       # tsc over the renderer
+npm run test:smoke      # end-to-end checks against a running API
+cargo test --manifest-path src-tauri/Cargo.toml    # the desktop shell
+```
 
-Backend:
-- pytest
-- unit tests
-- integration tests where useful
+Every change should leave all four green, and "green" means the output is in the
+message. `CLAUDE.md` forbids reporting done without it.
 
-Frontend:
-- component tests where appropriate
-- end-to-end tests for critical flows
+Backend tests are plain scripts under `backend/tests`, not pytest. The smoke
+test is written to pass against a database that already holds data, so it can be
+pointed at a real installation.
 
-Prioritize:
-- job scoring
-- normalization
-- deduplication
-- application states
-- document generation
-- validation
-- email template rendering
+What is worth testing first, because it is what the product promises: scoring,
+normalisation, deduplication, truthfulness validation, document generation, and
+the application state machine.
 
-When fixing bugs:
-- reproduce
-- fix
-- add regression test
-- rerun tests
+When fixing a bug, reproduce it before you fix it. A fix without a reproduction
+is a guess, and the regression test writes itself once the reproduction exists.
 
-Never remove a failing test merely to make the suite pass.
+Never delete a failing test to make a suite pass.

@@ -62,7 +62,17 @@ class Settings:
 
     llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "ollama"))
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
-    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen3-coder:30b-32k"))
+    #: A stock ~8B instruct tag, pulled with one documented command and nothing
+    #: else. The previous default was ``qwen3-coder:30b-32k``, a tag no stock
+    #: Ollama install has: it existed only if the user ran ``ollama create``
+    #: over the repository's ``Modelfile``, which nothing told them to do. It
+    #: was also a coding model being asked to write prose, and it wanted about
+    #: 20 GB. Override with ``JOB_HUNTER_OLLAMA_MODEL``.
+    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen3:8b"))
+    #: Context window, sent with every request. It used to come from a
+    #: ``PARAMETER num_ctx`` baked into a tag the user had to build by hand, so
+    #: a stock tag silently ran at Ollama's much smaller default.
+    ollama_num_ctx: int = field(default_factory=lambda: _env_int("OLLAMA_NUM_CTX", 16384))
     llm_timeout_seconds: float = field(default_factory=lambda: _env_float("LLM_TIMEOUT", 180.0))
     llm_enabled: bool = field(default_factory=lambda: _env_bool("LLM_ENABLED", True))
 

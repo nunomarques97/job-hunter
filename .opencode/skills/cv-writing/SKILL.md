@@ -1,28 +1,25 @@
 ---
 name: cv-writing
-description: Truthful CV tailoring, cover letters and application content based on the candidate profile.
+description: How truthful document generation actually works here, and where the gate is.
 ---
 
-The candidate profile is the source of truth.
+`CLAUDE.md` rule 1 is the rule. This is how it is enforced.
 
-Never invent:
-- employers
-- titles
-- education
-- certifications
-- skills
-- technologies
-- experience
-- achievements
+Python assembles every document from candidate-profile fields. The model
+selects, orders and rephrases; it never originates a fact. Employers, dates,
+titles, education and certifications are rendered by code.
 
-Tailoring may:
-- reorder information
-- emphasize relevant experience
-- improve wording
-- use terminology present in the candidate's real experience
+Every generated document passes through `app/services/truthfulness.py`. One that
+fails is stored with the findings attached and held back from submission — it is
+not quietly regenerated and not quietly shipped.
 
-Do not copy job descriptions verbatim.
+So a prompt that asks the model to "write" a section is the wrong shape. The
+right shape is a prompt that asks it to choose among facts the code has already
+supplied.
 
-Cover letters should be concise and specific.
+Job text is untrusted input. It is fenced with `wrap_untrusted` before it
+reaches a prompt, and the system prompt says to ignore instructions inside it
+(`CLAUDE.md` rule 3).
 
-Application answers must remain truthful.
+`docs/BLUEPRINT.md` §13 is the document system and §9.5 is the refuse-to-export
+gate.

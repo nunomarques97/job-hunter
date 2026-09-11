@@ -6,6 +6,15 @@ for the language model.
 
 All UI work must follow DESIGN.md.
 
+## Where things live
+
+- The plan: `docs/BLUEPRINT.md`
+- Current state: `docs/STATE.md`
+- The design system: `DESIGN.md`
+
+`docs/STATE.md` records what is done, what is in flight, what was learned and
+what is still open. Updating it is part of every task's definition of done.
+
 ## The source of truth
 
 `docs/BLUEPRINT.md` is the product and architecture source of truth. Read it
