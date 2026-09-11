@@ -31,12 +31,18 @@ is part of every task's definition of done.
   and it replaces the startup screen once the backend has failed or twenty
   seconds have passed. *Commit: `d10ada4`.*
 
+- **TASK 006b — Rescue the stale database, restructure this file, migrate
+  `CLAUDE.md` to the playbook template.** The archived database and the live
+  database are as described in the report delivered with this change. Split
+  across two commits: the `docs/STATE.md` half landed inside `d10ada4`
+  (folded into the TASK 005 commit by mistake instead of getting its own),
+  the `CLAUDE.md` half is `054d878`.
+
 ## Current work unit
 
-**TASK 006b — Rescue the stale database, create this file, migrate
-`CLAUDE.md` to the playbook template.** See the report delivered with this
-change for full detail: the archived database, the live database, and what
-each acceptance criterion confirmed.
+None. TASK 006b is complete; TASK 005b (this change) closes out loose ends
+it left behind — committed screenshots, this reconciliation, and a check
+that the toast move did not regress the rest of the app.
 
 ## Next work unit
 
@@ -66,6 +72,12 @@ what it does rather than how it is displayed. After Phase A: TASK 008
   code that wrote it there is gone, but the data was not, and it sat inside a
   directory `cargo clean` deletes. Check for orphaned data before assuming a
   build-output directory is disposable.
+- **Verification evidence that is not committed is verification that did not
+  happen.** TASK 005's three screenshots were rendered inside a session and
+  lost when it ended; TASK 005b had to re-run every state from scratch to get
+  evidence a later session could actually check against. The next session
+  cannot compare the current screen to the approved one from a description in
+  a transcript nobody kept.
 
 ## Open items
 

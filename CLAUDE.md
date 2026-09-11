@@ -110,6 +110,14 @@ confirmation in a running window, not just passing checks. Every completion
 report separates what was confirmed by running something from what could
 only be confirmed by reading code.
 
+- **A task is not done until it is committed.** Every completion report
+  states the commit SHA, or all of them when the work is split. "Done"
+  without a SHA is an unfinished task.
+- **UI work commits its evidence.** Any change to what a user sees is
+  captured from a running window and committed to `docs/design/screenshots/`
+  as `<task>-<state>.png`. The report names the committed paths — a
+  screenshot that only exists in a session transcript is not evidence.
+
 ## Where things live
 
 - Product context and decisions: `docs/BLUEPRINT.md` (§19 before assuming
@@ -120,9 +128,8 @@ only be confirmed by reading code.
 - Tooling configured here: `ui-kickoff`, `frontend-design`, the
   `engineering` and `design` plugin skills, installed globally; Chrome
   headless for renderer screenshots, `PrintWindow`/`PW_RENDERFULLCONTENT`
-  for the packaged window. Not configured, not needed: shadcn and its
-  registries, Impeccable — the renderer has no Tailwind or shadcn, its
-  design system is the hand-written token set in `frontend/src/styles/`.
+  for the packaged window. The design system is the hand-written token set
+  in `frontend/src/styles/`, no Tailwind or shadcn.
 - Work tracking: none — the roadmap lives in `docs/BLUEPRINT.md` §17, the
   state in `docs/STATE.md`.
 
