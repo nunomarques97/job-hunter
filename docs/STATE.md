@@ -29,7 +29,7 @@ is part of every task's definition of done.
   provenance**: a spawned backend reads as normal, an adopted one is labelled
   as attached and says its output is not captured. Reachable from Settings,
   and it replaces the startup screen once the backend has failed or twenty
-  seconds have passed. *Commit: `PENDING`.*
+  seconds have passed. *Commit: `d10ada4`.*
 
 ## Current work unit
 
