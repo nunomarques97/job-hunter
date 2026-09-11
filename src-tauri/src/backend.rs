@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::logging;
+
 /// The port the backend listens on, and the one the renderer talks to.
 pub const DEFAULT_PORT: u16 = 8756;
 
@@ -45,9 +47,45 @@ pub enum StartError {
     SpawnFailed { python: String, detail: String },
     /// The process started and never answered on its port.
     NoAnswer { port: u16, waited_seconds: u64 },
+    /// The backend was answering and then the process ended.
+    Stopped { detail: String },
+}
+
+/// A failure flattened into the fields an interface needs.
+///
+/// The renderer shows what the shell decided rather than composing its own
+/// wording, so the same failure reads the same way in the window and in the
+/// log.
+#[derive(Debug, Clone, Serialize)]
+pub struct StartFailure {
+    /// Which case this is, for a screen that wants to branch on it.
+    pub kind: &'static str,
+    pub summary: String,
+    pub remedy: String,
+    pub probed: Vec<String>,
 }
 
 impl StartError {
+    /// The presentation form handed to the renderer.
+    pub fn present(&self) -> StartFailure {
+        StartFailure {
+            kind: self.kind(),
+            summary: self.summary(),
+            remedy: self.remedy(),
+            probed: self.probed().to_vec(),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            StartError::BackendMissing { .. } => "backend_missing",
+            StartError::NoPythonEnvironment { .. } => "no_python_environment",
+            StartError::SpawnFailed { .. } => "spawn_failed",
+            StartError::NoAnswer { .. } => "no_answer",
+            StartError::Stopped { .. } => "stopped",
+        }
+    }
+
     /// One sentence naming what is wrong.
     pub fn summary(&self) -> String {
         match self {
@@ -66,6 +104,9 @@ impl StartError {
             } => format!(
                 "The backend started but did not answer on port {port} within {waited_seconds} seconds."
             ),
+            StartError::Stopped { detail } => {
+                format!("The local service stopped running: {detail}")
+            }
         }
     }
 
@@ -78,8 +119,8 @@ impl StartError {
             StartError::NoPythonEnvironment { .. } | StartError::SpawnFailed { .. } => {
                 SETUP_REMEDY.to_string()
             }
-            StartError::NoAnswer { .. } => {
-                "Check the backend log, then restart the application.".to_string()
+            StartError::NoAnswer { .. } | StartError::Stopped { .. } => {
+                "Check the backend log, then restart Job Hunter.".to_string()
             }
         }
     }
@@ -108,11 +149,31 @@ impl fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
+/// What the shell can report about the backend right now.
+///
+/// The window is on screen before any of this is decided, so the renderer asks
+/// for it rather than being told once. `Starting` is a real answer: it is what
+/// separates "still working on it" from "it failed", and the startup screen
+/// shows a different state for each.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BackendStatus {
+    Starting { port: u16 },
+    Ready { port: u16 },
+    Failed { port: u16, failure: StartFailure },
+}
+
+#[derive(Debug, Clone)]
+enum Phase {
+    Starting,
+    Ready,
+    Failed(StartError),
+}
+
 pub struct BackendState {
     child: Mutex<Option<Child>>,
     pub port: Mutex<u16>,
-    /// The last reason the backend failed to start, for the interface to show.
-    pub failure: Mutex<Option<StartError>>,
+    phase: Mutex<Phase>,
 }
 
 impl Default for BackendState {
@@ -127,7 +188,7 @@ impl Default for BackendState {
         Self {
             child: Mutex::new(None),
             port: Mutex::new(port),
-            failure: Mutex::new(None),
+            phase: Mutex::new(Phase::Starting),
         }
     }
 }
@@ -141,6 +202,23 @@ impl BackendState {
                 let _ = child.wait();
             }
         }
+    }
+
+    /// What to tell the renderer.
+    pub fn status(&self) -> BackendStatus {
+        let port = *self.port.lock().unwrap();
+        match &*self.phase.lock().unwrap() {
+            Phase::Starting => BackendStatus::Starting { port },
+            Phase::Ready => BackendStatus::Ready { port },
+            Phase::Failed(error) => BackendStatus::Failed {
+                port,
+                failure: error.present(),
+            },
+        }
+    }
+
+    fn set_phase(&self, phase: Phase) {
+        *self.phase.lock().unwrap() = phase;
     }
 }
 
@@ -261,17 +339,70 @@ fn python_command(backend: &Path) -> Result<PathBuf, StartError> {
     })
 }
 
+/// Watch the child until it ends, and record why.
+///
+/// Without this a backend that crashes or is killed simply stops answering,
+/// and the interface has nothing to say beyond a failed request. The phase
+/// changes, so the startup screen comes back with the reason.
+fn monitor(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(1000));
+        let state = app.state::<BackendState>();
+
+        let ended = {
+            let mut guard = match state.child.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            match guard.as_mut() {
+                // Shutdown took the child; there is nothing left to watch.
+                None => return,
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => Some(match status.code() {
+                        Some(code) => format!("the process exited with code {code}"),
+                        None => "the process was terminated".to_string(),
+                    }),
+                    Ok(None) => None,
+                    Err(error) => Some(format!("the process could not be checked: {error}")),
+                },
+            }
+        };
+
+        if let Some(detail) = ended {
+            logging::shell(&format!("the backend ended: {detail}"));
+            state.child.lock().unwrap().take();
+            state.set_phase(Phase::Failed(StartError::Stopped { detail }));
+            return;
+        }
+    });
+}
+
 /// Start the backend and wait until it answers.
 pub fn start(app: &AppHandle) -> Result<u16, StartError> {
     let state = app.state::<BackendState>();
 
+    state.set_phase(Phase::Starting);
     match run(app, &state) {
         Ok(port) => {
-            *state.failure.lock().unwrap() = None;
+            state.set_phase(Phase::Ready);
+            logging::shell(&format!("the backend is answering on port {port}"));
+            // Only a backend this shell started can be watched. One adopted on
+            // an already-busy port belongs to whoever started it.
+            if state.child.lock().unwrap().is_some() {
+                monitor(app.clone());
+            }
             Ok(port)
         }
         Err(error) => {
-            *state.failure.lock().unwrap() = Some(error.clone());
+            // One path per line. Six absolute Windows paths joined into a
+            // single line wrap into an unreadable block wherever they are
+            // shown.
+            logging::shell(&format!("start failed: {}", error.summary()));
+            logging::shell(&format!("remedy: {}", error.remedy()));
+            for path in error.probed() {
+                logging::shell(&format!("  looked at {path}"));
+            }
+            state.set_phase(Phase::Failed(error.clone()));
             Err(error)
         }
     }
@@ -304,8 +435,10 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
         .arg("info")
         .env("JOB_HUNTER_PORT", port.to_string())
         .env("PYTHONUNBUFFERED", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Both pipes go to the log file. They used to go to Stdio::null(),
+        // which is why a packaged failure left nothing behind to read.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(windows)]
     {
@@ -315,10 +448,25 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let child = command.spawn().map_err(|error| StartError::SpawnFailed {
+    logging::shell(&format!(
+        "starting {} in {} on port {}",
+        readable(&python),
+        readable(&backend),
+        port
+    ));
+
+    let mut child = command.spawn().map_err(|error| StartError::SpawnFailed {
         python: readable(&python),
         detail: error.to_string(),
     })?;
+
+    if let Some(stdout) = child.stdout.take() {
+        logging::pipe(stdout, "BACKEND ");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        logging::pipe(stderr, "BACKEND ");
+    }
+
     *state.child.lock().unwrap() = Some(child);
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;

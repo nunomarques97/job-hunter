@@ -6,12 +6,14 @@ No server, no network, no model. Run with:
 """
 from __future__ import annotations
 
+import logging
 import sys
 from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core.logging import MASK, Redactor, redact_text  # noqa: E402
 from app.db.base import utcnow  # noqa: E402
 from app.models.candidate import Candidate  # noqa: E402
 from app.models.enums import RemoteType, Seniority  # noqa: E402
@@ -251,6 +253,81 @@ check("source text retained", preview.source_text == cv_text)
 
 empty = extract_heuristic("")
 check("empty CV does not crash", empty.full_name == "" and empty.email == "")
+
+# -- log redaction --------------------------------------------------------------
+
+group("Log redaction")
+
+check(
+    "a password assignment is masked",
+    "hunter2" not in redact_text('connecting with password="hunter2"'),
+    redact_text('connecting with password="hunter2"'),
+)
+check(
+    "the mask is what replaces it",
+    MASK in redact_text("password=hunter2"),
+    redact_text("password=hunter2"),
+)
+check(
+    "a json secret is masked",
+    "s3cr3t" not in redact_text('{"client_secret": "s3cr3t", "user": "ada"}'),
+    redact_text('{"client_secret": "s3cr3t", "user": "ada"}'),
+)
+check(
+    "the rest of the line survives",
+    "ada" in redact_text('{"client_secret": "s3cr3t", "user": "ada"}'),
+)
+check(
+    "a bearer token is masked",
+    "eyJhbGciOi" not in redact_text("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc"),
+    redact_text("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc"),
+)
+check(
+    "a password inside a url is masked",
+    "letmein" not in redact_text("imap://someone:letmein@mail.example.com/"),
+    redact_text("imap://someone:letmein@mail.example.com/"),
+)
+check(
+    "an api key is masked",
+    "abcd1234" not in redact_text("api_key=abcd1234"),
+    redact_text("api_key=abcd1234"),
+)
+
+# A document body must not reach the log whole, however it is passed in.
+document_body = (
+    "PROFESSIONAL SUMMARY. Engineer with a decade of delivery experience. " * 40
+    + "REFEREES AVAILABLE ON REQUEST."
+)
+redacted_body = redact_text(document_body)
+check(
+    "a document body is cut short",
+    len(redacted_body) < len(document_body) / 4,
+    str(len(redacted_body)),
+)
+check("the truncation is announced", "truncated" in redacted_body)
+check("the tail of the body is gone", "REFEREES AVAILABLE" not in redacted_body)
+
+# The filter is what enforces it, so test the filter rather than only the helper.
+record = logging.LogRecord(
+    name="job_hunter",
+    level=logging.INFO,
+    pathname=__file__,
+    lineno=1,
+    msg="stored %s for %s",
+    args=(document_body, "password=hunter2"),
+    exc_info=None,
+)
+Redactor().filter(record)
+filtered = record.getMessage()
+check("the filter truncates a body given as an argument", len(filtered) <= 460, str(len(filtered)))
+check("the filter masks a password given as an argument", "hunter2" not in filtered, filtered)
+check("the filter leaves no format arguments behind", record.args == ())
+
+check(
+    "an ordinary line is untouched",
+    redact_text("database ready at C:/Users/example/AppData")
+    == "database ready at C:/Users/example/AppData",
+)
 
 print(f"\n{'=' * 60}")
 print(f"{passed} passed, {len(failures)} failed")

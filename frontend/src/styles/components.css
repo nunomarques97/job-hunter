@@ -1103,3 +1103,21 @@ table.data .num {
     opacity: 0;
   }
 }
+
+/* ---------- Service log ---------- */
+
+/* The tail of the backend log, shown while the service is starting and
+   whenever it will not. Surface value carries it, per DESIGN.md section 5;
+   there is no new colour, radius or spacing step here. */
+.logtail {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  max-height: 240px;
+  overflow: auto;
+  color: var(--text-secondary);
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from ..core.config import get_settings
+from ..core.logging import log_llm_call
 from .base import GenerationResult, LLMProvider, LLMUnavailable, ModelInfo, extract_json
 
 
@@ -59,21 +60,34 @@ class OllamaProvider(LLMProvider):
         if json_mode:
             payload["format"] = "json"
 
+        operation = "chat_json" if json_mode else "chat"
         started = time.perf_counter()
         try:
             response = await self._http().post("/api/chat", json=payload)
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as exc:
+            log_llm_call(
+                operation,
+                self.model,
+                time.perf_counter() - started,
+                "http_error",
+                str(exc.response.status_code),
+            )
             raise LLMUnavailable(
                 f"Ollama returned {exc.response.status_code} for model {self.model}."
             ) from exc
         except httpx.HTTPError as exc:
+            log_llm_call(
+                operation, self.model, time.perf_counter() - started, "unreachable", str(exc)
+            )
             raise LLMUnavailable(f"Could not reach Ollama at {self.base_url}: {exc}") from exc
 
         text = (data.get("message") or {}).get("content", "")
         if not text.strip():
+            log_llm_call(operation, self.model, time.perf_counter() - started, "empty")
             raise LLMUnavailable("Ollama returned an empty message.")
+        log_llm_call(operation, self.model, time.perf_counter() - started, "ok")
         return GenerationResult(
             text=text,
             model=self.model,

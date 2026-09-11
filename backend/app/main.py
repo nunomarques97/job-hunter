@@ -15,14 +15,11 @@ from fastapi.responses import JSONResponse
 
 from .api import api_router
 from .core.config import get_settings
+from .core.logging import configure_logging, log_slow_requests
 from .db import init_db
 from .llm import close_llm
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+configure_logging()
 logger = logging.getLogger("job_hunter")
 
 settings = get_settings()
@@ -30,10 +27,15 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info(
+        "starting %s %s on %s:%s", settings.app_name, settings.version, settings.host, settings.port
+    )
     init_db()
-    logger.info("Database ready at %s", settings.data_dir)
+    logger.info("database ready at %s", settings.data_dir)
     yield
+    logger.info("shutting down")
     await close_llm()
+    logger.info("shutdown complete")
 
 
 app = FastAPI(
@@ -42,6 +44,8 @@ app = FastAPI(
     description="Local backend for the Job Hunter desktop application.",
     lifespan=lifespan,
 )
+
+app.middleware("http")(log_slow_requests)
 
 app.add_middleware(
     CORSMiddleware,

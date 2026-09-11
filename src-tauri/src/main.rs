@@ -2,34 +2,37 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod logging;
 
-use backend::{BackendState, StartError};
+use backend::{BackendState, BackendStatus};
+use serde::Serialize;
 use tauri::webview::PageLoadEvent;
 use tauri::{Manager, RunEvent, WindowEvent};
 
-/// Where the renderer should send its API calls.
-///
-/// The port is chosen at startup, because a developer may already have the
-/// backend running, so the renderer asks rather than assuming.
+/// What the shell knows about the backend: starting, answering, or failed with
+/// a reason the startup screen renders verbatim.
 #[tauri::command]
-fn backend_port(state: tauri::State<'_, BackendState>) -> u16 {
-    *state.port.lock().unwrap()
+fn backend_status(state: tauri::State<'_, BackendState>) -> BackendStatus {
+    state.status()
 }
 
-/// Whether the backend is answering right now, for the interface to show.
-#[tauri::command]
-fn backend_ready(state: tauri::State<'_, BackendState>) -> bool {
-    backend::port_in_use(*state.port.lock().unwrap())
+#[derive(Serialize)]
+struct LogTail {
+    path: String,
+    lines: Vec<String>,
 }
 
-/// Why the backend is not running, when it is not.
+/// The last `count` lines of today's log.
 ///
-/// The typed value distinguishes a machine that has never had
-/// `scripts/setup.ps1` run on it from a backend that started and stayed silent,
-/// and carries the paths that were looked at so the diagnostic can show them.
+/// An absent file is an ordinary answer, not a failure: the startup screen asks
+/// for the tail before the backend has written its first line.
 #[tauri::command]
-fn backend_failure(state: tauri::State<'_, BackendState>) -> Option<StartError> {
-    state.failure.lock().unwrap().clone()
+fn backend_log_tail(count: usize) -> LogTail {
+    let (path, lines) = logging::tail(count.clamp(1, 500));
+    LogTail {
+        path: path.to_string_lossy().into_owned(),
+        lines,
+    }
 }
 
 fn main() {
@@ -38,11 +41,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(BackendState::default())
-        .invoke_handler(tauri::generate_handler![
-            backend_port,
-            backend_ready,
-            backend_failure
-        ])
+        .invoke_handler(tauri::generate_handler![backend_status, backend_log_tail])
         .on_page_load(|window, payload| {
             // Tell the renderer where the backend actually ended up. The page is
             // served from tauri://localhost, so a relative /api path would never
@@ -59,32 +58,23 @@ fn main() {
             ));
         })
         .setup(|app| {
-            let handle = app.handle().clone();
+            logging::shell("Job Hunter is starting");
 
-            // The window is created hidden and shown once the backend answers,
-            // so the user never sees an empty shell failing to load data.
+            // The window comes up first, and the renderer paints its startup
+            // state while the backend is still being found and launched. It
+            // used to wait for start() to return, which meant up to ninety
+            // seconds of no window at all whenever the backend was unwell.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+
+            let handle = app.handle().clone();
             std::thread::spawn(move || {
-                let started = backend::start(&handle);
-                if let Some(window) = handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-                if let Err(error) = started {
-                    // Named cases, because the two that matter have different
-                    // answers: one is fixed by running a script, the other is a
-                    // backend that is genuinely failing to serve.
-                    match &error {
-                        StartError::NoPythonEnvironment { probed } => {
-                            eprintln!(
-                                "Job Hunter: {} {} Looked at: {}",
-                                error.summary(),
-                                error.remedy(),
-                                probed.join(", ")
-                            );
-                        }
-                        _ => eprintln!("Job Hunter: {error}"),
-                    }
-                }
+                // The result is recorded in the backend state, which the
+                // renderer reads through backend_status; the log keeps the
+                // detail for afterwards.
+                let _ = backend::start(&handle);
             });
 
             Ok(())
@@ -99,6 +89,7 @@ fn main() {
         .run(|handle, event| {
             // Whichever way the application exits, the backend goes with it.
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
+                logging::shell("Job Hunter is closing");
                 handle.state::<BackendState>().shutdown();
             }
         });

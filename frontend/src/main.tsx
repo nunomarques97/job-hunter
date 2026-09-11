@@ -7,11 +7,14 @@ import './styles/components.css';
 
 import { AppStateProvider } from './app/AppState';
 import { Shell } from './app/Shell';
+import { StartupView } from './views/StartupView';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <AppStateProvider>
-      <Shell />
+      <StartupView>
+        <Shell />
+      </StartupView>
     </AppStateProvider>
   </React.StrictMode>,
 );
