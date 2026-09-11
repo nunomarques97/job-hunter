@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Local application data, never committed
+.devdata/
+.tmpdata/
+*.db
+*.db-shm
+*.db-wal
+
+# Node
+node_modules/
+frontend/dist/
+
+# Rust and Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

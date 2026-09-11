@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The permissions the Job Hunter window needs, and no others.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "opener:allow-open-url",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}

@@ -1,0 +1,99 @@
+/* Design tokens. The single source is DESIGN.md; nothing below is invented here.
+   Adding a value to this file means adding it to DESIGN.md first. */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-app: #0b111a;
+  --bg-rail: #161b2b;
+  --bg-chrome: #0f1522;
+  --surface-1: #141b27;
+  --surface-2: #192130;
+  --surface-3: #20293a;
+  --overlay: rgba(7, 11, 18, 0.72);
+
+  /* Lines */
+  --border: #1b222f;
+  --border-strong: #28324a;
+  --border-focus: #5f44ed;
+
+  /* Text */
+  --text-primary: #eef2f9;
+  --text-secondary: #9ba6bd;
+  --text-muted: #63718c;
+  --text-inverse: #0b111a;
+
+  /* Accent */
+  --accent: #5f44ed;
+  --accent-hover: #7059f2;
+  --accent-press: #4a33d6;
+  --accent-soft: #3f2c92;
+  --accent-ghost: rgba(95, 68, 237, 0.14);
+
+  /* Status */
+  --status-success: #47bb68;
+  --status-success-bg: #163732;
+  --status-info: #4170ef;
+  --status-info-bg: #132440;
+  --status-warn: #f7b650;
+  --status-warn-bg: #2e2415;
+  --status-danger: #f64955;
+  --status-danger-bg: #33171c;
+  --status-neutral: #63718c;
+  --status-neutral-bg: #1b2230;
+  /* The weak band of the match-score ramp: lighter than --status-neutral so
+     11.5px numerals on a tinted pill still clear 4.5:1. */
+  --score-weak: #8c9ab4;
+
+  --status-pipeline: #6953d3;
+  --status-pipeline-bg: #211c42;
+
+  /* Type */
+  --font-ui: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, "Courier New", monospace;
+
+  /* Radii */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* Depth */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-raised: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.6);
+
+  /* Motion */
+  --ease-in: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.4, 0, 1, 1);
+  --t-state: 120ms;
+  --t-enter: 180ms;
+  --t-layout: 240ms;
+
+  /* Layout */
+  --rail-width: 240px;
+  --rail-width-collapsed: 64px;
+  --commandbar-height: 56px;
+  --titlebar-height: 32px;
+  --content-max: 1560px;
+}
+
+/* The gradient wash permitted by DESIGN.md section 5, rule 1. */
+.wash {
+  background-image: linear-gradient(160deg, rgba(255, 255, 255, 0.03), transparent 60%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-enter: 0ms;
+    --t-layout: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

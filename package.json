@@ -1,0 +1,20 @@
+{
+  "name": "job-hunter",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Job Hunter — a local job-hunting command centre for Windows",
+  "type": "module",
+  "scripts": {
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "typecheck": "npm --prefix frontend run typecheck",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test:backend": "backend\\.venv\\Scripts\\python.exe backend/tests/test_units.py",
+    "test:smoke": "backend\\.venv\\Scripts\\python.exe backend/tests/smoke_workflow.py",
+    "backend": "backend\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8756 --reload"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
