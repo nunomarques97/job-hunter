@@ -1610,13 +1610,15 @@ So the manual step is *form-filling with everything pre-written*, not composing 
 
 ## 19.2 The big win: PyInstaller is no longer needed
 
-`backend.rs:112-113` already probes `backend/.venv/Scripts/python.exe` **before** falling back to bare `python`. On one known machine, a one-time venv is a complete and correct answer to P0-1.
+On one known machine, a one-time venv is a complete and correct answer to P0-1.
+
+> **Correction, applied in TASK 003/004.** This section originally said that `backend.rs` already probed `backend/.venv/Scripts/python.exe` before falling back to bare `python`, and that a venv alone was therefore sufficient. That was wrong on two counts. The probe order was `backend/runtime/python.exe` first, and more importantly `bundle.resources` copied `backend/app` next to the executable, so the shell resolved the backend package to that copy and looked for the interpreter *inside it* — never at the one `scripts/setup.ps1` creates in the repository. What happens now: the backend package and the interpreter are resolved **as a pair**, taking the first location that has both, and a package with no interpreter beside it is skipped rather than accepted. `bundle.resources` has been removed, so there is no second copy of the Python source to drift from the repository. The consequence is the one this section already intends: the app runs from the repository, and an installed copy launched from anywhere else has no backend to find.
 
 This deletes TASK 001 and TASK 002 as written, and with them **risk R-1** — bundling WeasyPrint's Pango/Cairo native dependencies into a PyInstaller one-folder build was the single most likely place for this plan to stall for days. WeasyPrint now just gets `pip install`ed into a venv, which always works.
 
 **Replacement — TASK 001b [P0] — One-time environment setup.**
 *Files:* new `scripts/setup.ps1`, `README.md`, `src-tauri/src/backend.rs`.
-*Acceptance:* `scripts/setup.ps1` creates `backend/.venv`, installs `requirements.txt`, verifies imports, and prints a clear result. `python_command()` keeps the `.venv` probe, **deletes the bare `"python"` fallback**, and when no venv is found returns a typed error the diagnostic panel renders as *"Run scripts/setup.ps1 once — the local service has no Python environment."* `bundle.resources` becomes irrelevant; the app runs from the repo.
+*Acceptance:* `scripts/setup.ps1` creates `backend/.venv`, installs `requirements.txt`, verifies imports, and prints a clear result. `python_command()` keeps the `.venv` probe, **deletes the bare `"python"` fallback**, and when no venv is found returns a typed error the diagnostic panel renders as *"Run scripts/setup.ps1 once — the local service has no Python environment."* `bundle.resources` is removed; the app runs from the repo.
 *Tests:* delete `backend/.venv`, launch, and confirm the diagnostic panel says exactly that within 2 seconds — not 90.
 
 PyInstaller returns only if the tool is ever given to someone else. It is a V2 line item, not a blocker.
@@ -1647,7 +1649,7 @@ For an audience of one the value concentrates:
 
 ## 19.5 The remaining five decisions, closed by the PO
 
-Per the standing rule that the PO decides what the PO can decide:
+Per the standing rule that the PO decides what the PO can decide. This section closes the **decisions**; carrying each one out belongs to the task named beside it, so a decision recorded here and not yet visible in the repository is work outstanding rather than a contradiction:
 
 | # | Decision | Closed as |
 |---|---|---|

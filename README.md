@@ -98,12 +98,16 @@ The Rust link step needs the MSVC desktop x64 libraries from a Visual Studio C++
 workload. Run `npx tauri build` from that developer environment if the linker
 reports it cannot open `msvcrt.lib`.
 
-The installers land in `src-tauri/target/release/bundle/`.
+The installers land in `src-tauri/target/release/bundle/`, but they are not how
+this is run. The backend is not bundled: the window looks for `backend/` and the
+virtual environment beside it, starting from where it was launched. Run
+`src-tauri/target/release/job-hunter.exe` from this checkout, or `npm run dev`.
+An installed copy started from the Start menu finds no backend and says so.
 
 ## Testing
 
 ```bash
-npm run test:backend    # 61 unit tests, offline
+npm run test:backend    # 75 unit tests, offline
 npm run typecheck       # the renderer
 npm run test:smoke      # 43 end-to-end checks against a running API
 ```

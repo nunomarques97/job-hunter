@@ -42,10 +42,6 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": {
-      "../backend/app": "backend/app",
-      "../backend/requirements.txt": "backend/requirements.txt"
-    },
     "shortDescription": "Local job-hunting command centre",
     "longDescription": "Discovers jobs from public boards, scores them against your profile, and prepares truthful application packages. Everything runs on your machine.",
     "windows": {

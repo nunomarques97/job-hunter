@@ -32,7 +32,6 @@ backend/      FastAPI + SQLAlchemy. Runs on 127.0.0.1:8756.
   app/llm         Provider abstraction; Ollama is the only implementation
   tests/          test_units.py (offline) and smoke_workflow.py (needs the API)
 src-tauri/    Rust. Owns the window and supervises the backend process.
-legacy/       Superseded skeleton code, kept only until the Sponsor says to drop it.
 ```
 
 ## Running it
@@ -62,7 +61,7 @@ to run from that developer environment:
 ## Testing
 
 ```bash
-npm run test:backend    # 61 unit tests, no network, no model, no server
+npm run test:backend    # 75 unit tests, no network, no model, no server
 npm run typecheck       # tsc over the renderer
 npm run test:smoke      # 43 end-to-end checks against a running API
 ```
@@ -123,6 +122,15 @@ These are not style preferences. Breaking one is a defect.
   produces the number, the breakdown and the skill lists with no network. The
   model only adds qualitative strengths and gaps plus a bounded adjustment. A
   score the user cannot reproduce is a score they cannot trust.
+- **The app runs from the repository.** There is no bundled copy of the backend:
+  the shell resolves the Python package and the interpreter as a pair and takes
+  the first place that has both, which is `backend/` next to `backend/.venv`.
+- **Everything the shell and the backend say goes to one file**, under
+  `%LOCALAPPDATA%\JobHunter\logsackend-YYYY-MM-DD.log`. The shell owns it,
+  rotates it at 5 MB and keeps seven. The backend writes to stdout and the shell
+  pipes it in, so there is one writer per file and `npm run backend` still
+  prints to the terminal. Every line passes `app/core/logging.py`'s redaction
+  filter, which is what keeps credentials and document bodies out of it.
 - **Sources ship free-form tags.** They feed technology detection through the
   vocabulary in `services/normalize.py` rather than being trusted as
   technologies, or the filters fill up with "digital nomad" and "exec".
