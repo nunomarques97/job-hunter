@@ -17,7 +17,7 @@ and says what to close. The API address now goes into the window through
 stale `target/release/backend/` moved aside, the root `Modelfile` deleted with
 `num_ctx` sent per request and the default model changed to `qwen3:8b`, and the
 `.opencode/` agents and skills rewritten to reference the blueprint.
-*Commits: this unit.*
+*Commits: `998e473`, `e5e665d`.*
 
 **TASK 003 + TASK 004 — Show the window first, and write every diagnostic to a
 file.** The window is created and shown in `setup()` before the backend thread
