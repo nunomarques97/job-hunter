@@ -122,6 +122,12 @@ def main() -> None:
     print("Health")
     status, health = call("GET", "/api/health")
     check("health responds", status == 200, f"status={status}")
+    check(
+        "health names the service",
+        health.get("service") == "job-hunter",
+        f"service={health.get('service')!r} — the desktop shell uses this to tell its own "
+        "backend apart from any other program holding the port",
+    )
     check("database healthy", health["database"]["status"] == "healthy", str(health["database"]))
     check("11 tables present", health["database"].get("tables") == 11, str(health["database"].get("tables")))
     print(f"  info  model: {health['llm']['model']} ({health['llm']['status']})")

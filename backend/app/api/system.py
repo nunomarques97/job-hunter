@@ -16,6 +16,16 @@ from ..sources import available_sources
 
 router = APIRouter()
 
+#: What ``/api/health`` answers under ``service``, and nothing else does.
+#:
+#: The desktop shell has to be able to tell this backend apart from any other
+#: program that happens to hold the port. A 200 proves only that something
+#: speaks HTTP, so the shell requires this exact value before it will treat a
+#: listener as the Job Hunter API. It is a literal rather than ``app_name``
+#: because the handshake must not change when the product is renamed.
+#: ``src-tauri/src/backend.rs`` holds the other half.
+SERVICE_IDENTITY = "job-hunter"
+
 
 @router.get("/health")
 async def health(db: Session = Depends(get_db)) -> dict:
@@ -53,6 +63,7 @@ async def health(db: Session = Depends(get_db)) -> dict:
         overall = "healthy"
 
     return {
+        "service": SERVICE_IDENTITY,
         "status": overall,
         "version": settings.version,
         "database": database,

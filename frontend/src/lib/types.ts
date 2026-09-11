@@ -321,6 +321,8 @@ export interface SourceInfo {
 }
 
 export interface Health {
+  /** Always `job-hunter`. The desktop shell requires it to recognise its own backend. */
+  service: string;
   status: 'healthy' | 'degraded' | 'unhealthy';
   version: string;
   database: { status: string; detail: string; tables?: number };

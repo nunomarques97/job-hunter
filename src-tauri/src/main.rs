@@ -6,7 +6,7 @@ mod logging;
 
 use backend::{BackendState, BackendStatus};
 use serde::Serialize;
-use tauri::webview::PageLoadEvent;
+use tauri::webview::WebviewWindowBuilder;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 /// What the shell knows about the backend: starting, answering, or failed with
@@ -42,32 +42,44 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(BackendState::default())
         .invoke_handler(tauri::generate_handler![backend_status, backend_log_tail])
-        .on_page_load(|window, payload| {
-            // Tell the renderer where the backend actually ended up. The page is
-            // served from tauri://localhost, so a relative /api path would never
-            // reach it. This runs as navigation starts, before the bundle's own
-            // scripts, and the renderer falls back to the default port if it
-            // somehow does not.
-            if payload.event() != PageLoadEvent::Started {
-                return;
-            }
-            let port = *window.app_handle().state::<BackendState>().port.lock().unwrap();
-            let port = if port == 0 { backend::DEFAULT_PORT } else { port };
-            let _ = window.eval(&format!(
-                "window.__JOB_HUNTER_API__ = 'http://127.0.0.1:{port}';"
-            ));
-        })
         .setup(|app| {
             logging::shell("Job Hunter is starting");
+
+            // Which port the backend will be on has to be settled before the
+            // window exists, because the answer goes into the window's
+            // initialization script. A free port costs a refused loopback
+            // connection; only a port somebody else is holding costs a probe.
+            let port = backend::decide_port(app.handle());
+
+            // The page is served from tauri://localhost, so a relative /api
+            // path would never reach the backend. This used to be a
+            // window.eval at PageLoadEvent::Started, racing the renderer's own
+            // module evaluation and forcing 'unsafe-inline' into script-src.
+            // An initialization script is guaranteed to run first.
+            let address = format!("window.__JOB_HUNTER_API__ = 'http://127.0.0.1:{port}';");
+
+            // The window keeps its size, title and colours in tauri.conf.json,
+            // where "create": false stops Tauri opening it before the script is
+            // attached. Rebuilding it from that same config adds the script
+            // without moving the window's appearance into Rust.
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .cloned()
+                .expect("tauri.conf.json must define a window labelled main");
 
             // The window comes up first, and the renderer paints its startup
             // state while the backend is still being found and launched. It
             // used to wait for start() to return, which meant up to ninety
             // seconds of no window at all whenever the backend was unwell.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            let window = WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .initialization_script(address)
+                .build()?;
+            let _ = window.show();
+            let _ = window.set_focus();
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
