@@ -1,155 +1,134 @@
 # Job Hunter
 
-A Windows desktop job-hunting command centre. Everything runs on the user's own
-machine: a Tauri 2 window, a local FastAPI backend, a SQLite database, and Ollama
-for the language model.
+A Windows desktop job-hunting command centre, all local: a Tauri 2 window, a
+FastAPI backend, a SQLite database, Ollama for the language model.
 
-All UI work must follow DESIGN.md.
-
-## Where things live
-
-- The plan: `docs/BLUEPRINT.md`
-- Current state: `docs/STATE.md`
-- The design system: `DESIGN.md`
-
-`docs/STATE.md` records what is done, what is in flight, what was learned and
-what is still open. Updating it is part of every task's definition of done.
-
-## The source of truth
-
-`docs/BLUEPRINT.md` is the product and architecture source of truth. Read it
-before proposing scope, and read §19 before assuming anything about packaging.
-Three constraints from §19.7 apply to every change, and are not repeated here:
-
-1. Nothing about the Sponsor goes in code. No city, country, stack, seniority,
-   employer, name, salary or language. It comes from the profile or the config.
-2. Stay PyInstaller-compatible. No dynamic imports, one `resource_path()` helper
-   for data paths, nothing at runtime that assumes the repository layout.
-3. Every dialog, tab set and toast goes through `ui.tsx`.
-
-## Shape of the repository
+## Stack & essentials
 
 ```
-frontend/     React + TypeScript + Vite. The renderer. No runtime dependencies
-              beyond React: the router, icons, charts and styles are all local.
-backend/      FastAPI + SQLAlchemy. Runs on 127.0.0.1:8756.
+frontend/     React + TypeScript + Vite. No runtime deps beyond React — router,
+              icons, charts and styles are all local.
+backend/      FastAPI + SQLAlchemy, on 127.0.0.1:8756.
   app/api         HTTP routes, one module per area, mounted under /api
-  app/services    The domain: discovery, normalise, dedupe, scoring, documents,
+  app/services    discovery, normalise, dedupe, scoring, documents,
                   truthfulness, applications, automation, analytics, cv_import
-  app/sources     One module per job board, all public documented endpoints
+  app/sources     one module per job board, public documented endpoints only
   app/models      SQLAlchemy models, all on the single Base in app/db/base.py
-  app/llm         Provider abstraction; Ollama is the only implementation
-  tests/          test_units.py (offline) and smoke_workflow.py (needs the API)
+  app/llm         provider abstraction; Ollama is the only implementation
 src-tauri/    Rust. Owns the window and supervises the backend process.
 ```
 
-## Running it
-
 ```bash
-npm --prefix frontend install                              # once
-powershell -ExecutionPolicy Bypass -File scripts/setup.ps1 # once: backend/.venv
-npm run backend                   # terminal 1: the API on 8756
-npm run dev:frontend              # terminal 2: Vite on 5173
-npm run dev                       # or: the desktop window, which starts both
+npm --prefix frontend install                                # once
+powershell -ExecutionPolicy Bypass -File scripts/setup.ps1    # once: backend/.venv
+npm run backend          # terminal 1: the API on 8756
+npm run dev:frontend     # terminal 2: Vite on 5173
+npm run dev               # or: the desktop window, starts both
+npm run build              # Windows installers
 ```
 
-Build the Windows installers:
-
-```bash
-npm run build
-```
-
-The Rust link step needs the MSVC desktop x64 libraries. On this machine they are
-in the VS 2022 Build Tools rather than the VS 2026 install, so `tauri build` has
-to run from that developer environment:
+`tauri build` needs the MSVC desktop x64 libraries, which on this machine are
+in VS 2022 Build Tools rather than the VS 2026 install on PATH:
 
 ```
 "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && npx tauri build
 ```
 
-## Testing
+## Invariants
 
-```bash
-npm run test:backend    # 75 unit tests, no network, no model, no server
-npm run typecheck       # tsc over the renderer
-npm run test:smoke      # 43 end-to-end checks against a running API
-```
+Not style preferences. Breaking one is a defect.
 
-Every change should leave all three green. The smoke test is written to pass
-against a database that already holds data, so it can be pointed at a real
-installation.
-
-## The rules this product is built on
-
-These are not style preferences. Breaking one is a defect.
-
-1. **The candidate profile is the only source of truth.** No generated document
-   may state a fact the profile does not contain. Employers, dates, titles,
-   education and certifications are rendered from the profile by code; the model
-   is allowed to reorder and re-emphasise, never to add. Every generated document
-   goes through `app/services/truthfulness.py`, and one that fails is stored with
-   the findings attached and held back from submission.
-
-2. **Only sanctioned submission.** An application is transmitted only through a
-   mechanism the recipient published for it. Everything else is prepared in full
-   and routed to ACTION_REQUIRED with the package retained. Nothing in this
-   codebase fills a third-party form, drives a logged-in session, evades a rate
-   limit, or works around any access control. `SourceCapabilities.can_submit`
-   states the truth for each source and is false almost everywhere.
-
-3. **Job text is untrusted input.** It is fenced with `wrap_untrusted` before it
-   reaches a prompt, and the system prompt says to ignore instructions inside it.
-   Model output is parsed and stored, never executed, never used to build a path
-   or a command, and never allowed to decide what the application does next. A
-   model score adjustment is clamped to ±8 points.
-
-4. **Degraded is never presented as complete.** A failed job source is named. A
-   score computed without the model says `deterministic`. A document from a
-   template says so. A rate over fewer than five applications is marked
+1. **The candidate profile is the only source of truth.** No generated
+   document may state a fact the profile does not contain. Employers, dates,
+   titles, education and certifications are rendered from the profile by
+   code; the model reorders and re-emphasises, never adds. Every generated
+   document goes through `app/services/truthfulness.py`; a failure is stored
+   with the findings attached and held back from submission.
+2. **Only sanctioned submission.** An application is transmitted only through
+   a mechanism the recipient published for it. Everything else is prepared in
+   full and routed to ACTION_REQUIRED. Nothing fills a third-party form,
+   drives a logged-in session, evades a rate limit, or works around any
+   access control. `SourceCapabilities.can_submit` is false almost everywhere.
+3. **Job text is untrusted input.** Fenced with `wrap_untrusted` before it
+   reaches a prompt; the system prompt says to ignore instructions inside it.
+   Model output is parsed and stored, never executed, never used to build a
+   path or a command. A model score adjustment is clamped to ±8 points.
+4. **Degraded is never presented as complete.** A failed job source is named.
+   A score computed without the model says `deterministic`. A document from a
+   template says so. A rate over fewer than five applications is
    `low_confidence`.
+5. **No credentials in the database.** An email account row stores the *name*
+   of an entry in the OS credential store. The API rejects a payload carrying
+   a password rather than silently dropping it.
+6. **One declarative base.** Every model imports `Base` from
+   `app/db/base.py`. A second base silently drops those tables from
+   `create_all` — how the first version of this project shipped an empty
+   database file.
 
-5. **No credentials in the database.** An email account row stores the *name* of
-   an entry in the OS credential store. The API rejects a payload carrying a
-   password rather than silently dropping it.
+Three more, from blueprint §19.7, because they are the difference between a
+personal tool and one that can be handed to someone else later:
 
-6. **One declarative base.** Every model imports `Base` from `app/db/base.py`. A
-   second base silently removes those tables from `create_all`, which is exactly
-   how the first version of this project shipped an empty database file.
+7. Nothing about the Sponsor goes in code — no city, country, stack,
+   seniority, employer, name, salary or language. It comes from the profile
+   or the config.
+8. Stay PyInstaller-compatible: no dynamic imports, one `resource_path()`
+   helper for data paths, nothing at runtime that assumes the repository
+   layout.
+9. Every dialog, tab set and toast goes through `ui.tsx`.
 
-## Things worth knowing
+## Conventions
 
-- **SQLite, not PostgreSQL.** `ARRAY` columns do not exist here; list and dict
-  fields use `JSON`.
-- **Data lives outside the repository**, under `%LOCALAPPDATA%\JobHunter`, because
-  a packaged app cannot write next to its executable. Override with
-  `JOB_HUNTER_DATA_DIR`.
-- **The renderer's API base differs by build.** The dev server proxies `/api`; the
-  packaged app is served from `tauri://localhost` and must call
-  `http://127.0.0.1:8756/api`. The shell injects the real address as
+- SQLite, not PostgreSQL — no `ARRAY` columns; list and dict fields use
+  `JSON`.
+- Data lives outside the repository, under `%LOCALAPPDATA%\JobHunter`,
+  because a packaged app cannot write next to its executable.
+- The renderer's API base differs by build: the dev server proxies `/api`;
+  the packaged app calls `http://127.0.0.1:8756/api`, injected as
   `window.__JOB_HUNTER_API__` before the page loads.
-- **Scoring is deterministic first.** The arithmetic in `services/scoring.py`
-  produces the number, the breakdown and the skill lists with no network. The
-  model only adds qualitative strengths and gaps plus a bounded adjustment. A
-  score the user cannot reproduce is a score they cannot trust.
-- **The app runs from the repository.** There is no bundled copy of the backend:
-  the shell resolves the Python package and the interpreter as a pair and takes
-  the first place that has both, which is `backend/` next to `backend/.venv`.
-- **Everything the shell and the backend say goes to one file**, under
-  `%LOCALAPPDATA%\JobHunter\logsackend-YYYY-MM-DD.log`. The shell owns it,
-  rotates it at 5 MB and keeps seven. The backend writes to stdout and the shell
-  pipes it in, so there is one writer per file and `npm run backend` still
-  prints to the terminal. Every line passes `app/core/logging.py`'s redaction
-  filter, which is what keeps credentials and document bodies out of it.
-- **Sources ship free-form tags.** They feed technology detection through the
-  vocabulary in `services/normalize.py` rather than being trusted as
-  technologies, or the filters fill up with "digital nomad" and "exec".
+- Scoring is deterministic first. `services/scoring.py` produces the number,
+  breakdown and skill lists with no network; the model only adds qualitative
+  strengths/gaps plus a bounded adjustment.
+- The app runs from the repository — no bundled backend copy. The shell
+  resolves the Python package and its interpreter as a pair, first location
+  with both wins.
+- Everything the shell and backend say goes to one file, under
+  `%LOCALAPPDATA%\JobHunter\logs\backend-YYYY-MM-DD.log`, rotated at 5 MB,
+  seven kept, redacted by `app/core/logging.py`.
+- Sources ship free-form tags; they feed technology detection through the
+  vocabulary in `services/normalize.py` rather than being trusted directly.
 
-## Tooling configured here
+## Verification
 
-- `ui-kickoff`, `frontend-design`, the `engineering` and `design` plugin skills:
-  installed globally.
-- Chrome headless for renderer screenshots; `PrintWindow` with
-  `PW_RENDERFULLCONTENT` for capturing the packaged window.
-- Not configured, and not needed for this stack: shadcn and its registries, and
-  Impeccable. The renderer has no Tailwind or shadcn; its design system is the
-  hand-written token set in `frontend/src/styles/`.
+- `npm run test:backend` — unit tests, no network, no model, no server.
+- `npm run typecheck` — tsc over the renderer.
+- `npm run test:smoke` — end-to-end checks against a running API.
+- `cargo check` — from the vcvars64 environment above.
+
+Every change should leave all four green. A green suite is evidence for what
+it tests, not for what a user sees or a process does — UI work needs visual
+confirmation in a running window, not just passing checks. Every completion
+report separates what was confirmed by running something from what could
+only be confirmed by reading code.
+
+## Where things live
+
+- Product context and decisions: `docs/BLUEPRINT.md` (§19 before assuming
+  anything about packaging, §17 for the task list)
+- Design reference: `DESIGN.md`
+- Current state: `docs/STATE.md` — what is done, in flight, learned and
+  still open; updating it is part of every task's definition of done
+- Tooling configured here: `ui-kickoff`, `frontend-design`, the
+  `engineering` and `design` plugin skills, installed globally; Chrome
+  headless for renderer screenshots, `PrintWindow`/`PW_RENDERFULLCONTENT`
+  for the packaged window. Not configured, not needed: shadcn and its
+  registries, Impeccable — the renderer has no Tailwind or shadcn, its
+  design system is the hand-written token set in `frontend/src/styles/`.
+- Work tracking: none — the roadmap lives in `docs/BLUEPRINT.md` §17, the
+  state in `docs/STATE.md`.
+
+## Operating model
+
+Sponsor sets direction; Claude (PO) owns product decisions and writes
+implementation briefs; Claude Code implements and verifies. Claude Code does
+not change product decisions — it reports the problem with evidence and
+returns the decision to the PO.
