@@ -79,6 +79,14 @@ export interface Supervision {
   can_restart: boolean;
   /** The restart, once spent. `null` means it is still available. */
   restart: Restart | null;
+  /** True while an adopted backend has stopped and the window is still asking
+   *  its port, ready to attach again to whatever Job Hunter service answers
+   *  there next. Not a restart, and it spends no part of the budget. */
+  reattaching: boolean;
+  /** When this window last attached again, in the log's UTC stamp. `null` if
+   *  it never has. A window that recovered on its own is indistinguishable
+   *  from one that was never broken unless the panel says this. */
+  reattached_at: string | null;
 }
 
 /** Facts every backend state carries, whatever the state is. */
@@ -114,6 +122,10 @@ export interface StartFailure {
   summary: string;
   remedy: string;
   probed: string[];
+  /** The moment the summary is about, in the log file's UTC stamp, for the few
+   *  failures that are about a moment. Kept out of the sentence so the panel
+   *  can print it in this machine's clock like every other time it shows. */
+  at: string | null;
 }
 
 export interface LogTail {
@@ -143,6 +155,18 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 export function backendStatus(): Promise<BackendStatus | null> {
   return call<BackendStatus>('backend_status');
+}
+
+/**
+ * Ask the shell to check the backend now rather than at its next interval.
+ *
+ * What "Check again" does beyond reloading the screen. Reloading only re-asks
+ * for decisions already taken; this makes the shell take a new one, which is
+ * the difference between re-reading a stale answer and attaching again to a
+ * service that has come back on the port.
+ */
+export function backendRecheck(): Promise<BackendStatus | null> {
+  return call<BackendStatus>('backend_recheck');
 }
 
 export function backendLogTail(count = 60): Promise<LogTail | null> {

@@ -58,9 +58,29 @@ is part of every task's definition of done.
   "1 strong match", not "matches". *Commits: `8abbae2`, `2805e09` (the adopted-stopped
   remedy, which promised a recovery this window cannot make).*
 
+- **TASK 007b — An honest window in the degraded state.** Three things TASK 007
+  left, all the same family. **The chrome no longer pretends to load.** The
+  startup screen used to draw a skeleton of the shell — ten blank pills, a grey
+  search block, no footer — and a skeleton means "wait" for a wait that never
+  ends. The real shell renders in every backend state now and is told the
+  condition instead: every rail label is readable, the screens that need the
+  service are disabled with the reason stated once above them, the footer says
+  the condition and leads to the panel, and Settings and Diagnostics stay
+  clickable. Settings itself no longer shows empty cards where the service could
+  not answer. **One clock.** The exhausted-restart sentence carried a UTC stamp
+  welded into it and sat directly above the same moment in local time;
+  `StartFailure` now carries the instant beside the sentence as `at`, the log
+  line keeps UTC and the panel prints local. **An adopted backend that comes
+  back is picked up again.** The window keeps polling after one stops, re-reads
+  `/api/info` on re-attachment because the kept answer describes a process that
+  is gone, and says in the panel and the log when it happened. Re-attaching is
+  not a restart and spends none of the one-restart budget; "Check again" now
+  drives it through a new `backend_recheck` command rather than only redrawing.
+  *Commit: `TBD`.*
+
 ## Current work unit
 
-None.
+None. Phase A is closed.
 
 ## Next work unit
 
@@ -97,6 +117,18 @@ migration ever runs. After that: 013–019 (truthfulness and documents), then
   same useless sentence on the panel: "a service stopped", with no way to say
   which one. The general rule: capture what you will need from a resource you
   do not own at the moment you attach to it, not at the moment you need it.
+- **A loading state is a promise, and a promise the window cannot keep is a
+  lie.** The degraded chrome was not a missing feature. It was the shell's
+  loading state left switched on for a condition that never resolves, on ten
+  labels that are static text and never needed the backend at all. Before
+  drawing a skeleton, ask what will replace it and whether that thing is
+  actually coming.
+- **Driving the window is part of the verification, and the pointer has to be
+  proven to have landed.** Two runs in this task looked like a fix had failed
+  when the click had simply gone to the wrong screen: the renderer had not yet
+  switched to the panel, and the first click after `SetForegroundWindow` is
+  eaten by activation. Screenshot before clicking, and prove a timed action by
+  where it falls between two known clock marks.
 - **Verification evidence that is not committed is verification that did not
   happen.** TASK 005's three screenshots were rendered inside a session and
   lost when it ended; TASK 005b had to re-run every state from scratch to get

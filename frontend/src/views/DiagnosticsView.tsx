@@ -28,6 +28,7 @@ import { useAsync } from '../lib/hooks';
 import type { ModelStatus, SystemInfo } from '../lib/types';
 import {
   backendLogTail,
+  backendRecheck,
   backendStatus,
   inShell,
   openLogFolder,
@@ -78,6 +79,12 @@ export function DiagnosticsView({
   }, [nonce]);
 
   const recheck = () => {
+    // Three things, because re-reading is not re-checking. The screen reloads,
+    // the service is asked again — and the shell is told to bring its own next
+    // check forward, which is what attaches this window again to a service that
+    // has come back on the port. Without the third, "Check again" on a stopped
+    // adopted backend would only redraw the same sentence.
+    void backendRecheck();
     setNonce((value) => value + 1);
     info.reload();
     onRecheck?.();
@@ -158,7 +165,14 @@ export function DiagnosticsView({
 
       {failure && (
         <Notice tone="danger">
-          <div className="t-small">{failure.summary}</div>
+          {/* The instant arrives beside the sentence rather than inside it, so
+              it can be printed on this machine's clock like every other time on
+              this screen. A UTC stamp welded into the sentence used to sit two
+              rows above the same moment in local time and disagree with it. */}
+          <div className="t-small">
+            {failure.summary}
+            {failure.at && ` That was at ${localStamp(failure.at)}.`}
+          </div>
           <div className="t-caption secondary">{failure.remedy}</div>
           {failure.probed.length > 0 && (
             <div className="col" style={{ gap: 4, marginTop: 8 }}>
@@ -345,23 +359,33 @@ function SupervisionRow({ status }: { status: BackendStatus }) {
   // nobody asked about a process that never existed.
   const nothingStarted = status.state === 'failed' && status.provenance === 'pending';
 
-  const value = supervision.watching
-    ? `Checked every ${supervision.poll_seconds} seconds`
-    : nothingStarted
-      ? 'Nothing to watch'
-      : status.state === 'failed'
-        ? 'Stopped — the failure above is the last thing it saw'
-        : 'Not started yet';
+  const value = supervision.reattaching
+    ? `Still checking every ${supervision.poll_seconds} seconds, for the service to come back`
+    : supervision.watching
+      ? `Checked every ${supervision.poll_seconds} seconds`
+      : nothingStarted
+        ? 'Nothing to watch'
+        : status.state === 'failed'
+          ? 'Stopped — the failure above is the last thing it saw'
+          : 'Not started yet';
 
-  const hint = supervision.restart
-    ? `the one automatic restart was used at ${localStamp(supervision.restart.at)} — ${
-        supervision.restart.reason
-      }. There is no second one in this window.`
-    : nothingStarted
-      ? 'no service was started, so nothing is being checked'
-      : supervision.can_restart
-        ? 'one automatic restart is available, once, for this window'
-        : 'this window did not start the service, so it cannot restart it';
+  const hint = supervision.reattaching
+    ? 'this window did not start that service and cannot restart it, but it can attach again: ' +
+      'the moment a Job Hunter service answers on that port this window takes it up, reads what ' +
+      'it says about itself, and carries on. That is not a restart and spends none of the budget.'
+    : supervision.restart
+      ? `the one automatic restart was used at ${localStamp(supervision.restart.at)} — ${
+          supervision.restart.reason
+        }. There is no second one in this window.`
+      : supervision.reattached_at
+        ? `the service this window attached to stopped, and this window attached again at ${localStamp(
+            supervision.reattached_at,
+          )}, to a different process answering on the same port. It read that one's own account of itself afresh. No restart was used: this window cannot restart what it did not start.`
+        : nothingStarted
+          ? 'no service was started, so nothing is being checked'
+          : supervision.can_restart
+            ? 'one automatic restart is available, once, for this window'
+            : 'this window did not start the service, so it cannot restart it';
 
   return <Row label="Supervision" value={value} hint={hint} />;
 }

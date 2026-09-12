@@ -143,6 +143,15 @@ pub struct StartFailure {
     pub summary: String,
     pub remedy: String,
     pub probed: Vec<String>,
+    /// The moment the summary refers to, in the log file's UTC stamp, when the
+    /// summary refers to one.
+    ///
+    /// Deliberately not written into the sentence. The log is in UTC and the
+    /// panel is in this machine's clock, and one string cannot be both: a
+    /// banner reading `09:52:35Z` above a row reading `10:52:35 AM` is two
+    /// clocks on one screen. The sentence carries no time; this field carries
+    /// the instant, and each surface stamps it in its own convention.
+    pub at: Option<String>,
 }
 
 impl StartError {
@@ -153,6 +162,7 @@ impl StartError {
             summary: self.summary(),
             remedy: self.remedy(),
             probed: self.probed().to_vec(),
+            at: self.at(),
         }
     }
 
@@ -195,9 +205,9 @@ impl StartError {
             StartError::Stopped { detail } => {
                 format!("The local service stopped running: {detail}")
             }
-            StartError::RestartExhausted { detail, restarted } => format!(
+            StartError::RestartExhausted { detail, .. } => format!(
                 "The local service stopped again ({detail}), and this window had already used \
-                 its one automatic restart at {restarted}."
+                 its one automatic restart."
             ),
             StartError::RestartFailed { detail } => format!(
                 "The local service stopped, and starting it again did not work: {detail}"
@@ -231,16 +241,24 @@ impl StartError {
                  both failures."
                     .to_string()
             }
-            StartError::AdoptedStopped { .. } => {
-                // Deliberately one instruction rather than two. Starting the
-                // service again does not bring this window back: it attached
-                // once, at launch, and nothing re-attaches it. Saying "start it
-                // again" on its own would be the kind of half-true remedy this
-                // screen exists to avoid.
-                "Close Job Hunter and open it again. If the service is running by then this \
-                 window attaches to it; if not, it starts its own."
-                    .to_string()
-            }
+            // The window no longer attaches only at launch. It keeps checking
+            // that port and attaches again as soon as a Job Hunter service
+            // answers there, so the instruction is to start the service rather
+            // than to close the window. Re-attaching is not a restart and
+            // spends no part of the one-restart budget.
+            StartError::AdoptedStopped { port, .. } => format!(
+                "Start the service again on port {port}. This window keeps checking and attaches \
+                 to it on its next check, without being closed."
+            ),
+        }
+    }
+
+    /// The instant the summary refers to, for a surface to stamp in its own
+    /// clock. `None` for a failure that is not about a moment.
+    pub fn at(&self) -> Option<String> {
+        match self {
+            StartError::RestartExhausted { restarted, .. } => Some(restarted.clone()),
+            _ => None,
         }
     }
 
@@ -345,6 +363,21 @@ pub struct Supervision {
     pub can_restart: bool,
     /// The restart, once it has been used. `None` means it is still available.
     pub restart: Option<Restart>,
+    /// True while an adopted backend has stopped and the window is waiting for
+    /// a Job Hunter service to answer on that port again.
+    ///
+    /// This is not a restart and it is not a retry of one. The window never
+    /// owned that process, so all it can do is keep asking the port; when the
+    /// answer comes back it attaches to whatever is there now, which is a
+    /// different process from the one it lost.
+    pub reattaching: bool,
+    /// When this window last attached again, in the log file's UTC stamp.
+    /// `None` if it never has.
+    ///
+    /// Kept because a window that recovered on its own looks exactly like one
+    /// that was never broken, and the panel would otherwise have nothing to
+    /// say about the minutes the service was gone.
+    pub reattached_at: Option<String>,
 }
 
 /// What the shell can report about the backend right now.
@@ -418,6 +451,15 @@ pub struct BackendState {
     restart: Mutex<Option<Restart>>,
     /// Whether a supervisor is running.
     watching: AtomicBool,
+    /// Whether the supervisor is waiting for an adopted backend to come back.
+    reattaching: AtomicBool,
+    /// When this window last attached again to a service that came back.
+    reattached_at: Mutex<Option<String>>,
+    /// Set by "Check again" so the supervisor stops waiting out its ten-second
+    /// interval and asks the port now. A flag rather than a direct probe from
+    /// the command thread, so every transition between the phases stays in the
+    /// one place that owns them.
+    recheck: AtomicBool,
     /// Set once the window is closing, so the supervisor stops rather than
     /// treating a deliberate kill as a crash to recover from.
     stopping: AtomicBool,
@@ -438,6 +480,9 @@ impl Default for BackendState {
             origin: Mutex::new(None),
             restart: Mutex::new(None),
             watching: AtomicBool::new(false),
+            reattaching: AtomicBool::new(false),
+            reattached_at: Mutex::new(None),
+            recheck: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             launched_at: logging::stamp(),
         }
@@ -467,6 +512,22 @@ impl BackendState {
     /// Whether the window is closing.
     fn stopping(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Ask the supervisor to check the port now rather than at its next
+    /// interval. What "Check again" does on the diagnostic panel.
+    ///
+    /// It asks; it does not act. Nothing happens if no supervisor is running,
+    /// which is the honest answer for a spawned backend that has spent its one
+    /// restart — a button that pretended otherwise would be offering a recovery
+    /// this window has already said it will not attempt.
+    pub fn request_recheck(&self) {
+        self.recheck.store(true, Ordering::SeqCst);
+    }
+
+    /// Take the pending "check now" request, if there is one.
+    fn take_recheck(&self) -> bool {
+        self.recheck.swap(false, Ordering::SeqCst)
     }
 
     /// Take the one automatic restart, if it has not been taken already.
@@ -512,6 +573,8 @@ impl BackendState {
             // button for it rather than one that cannot work.
             can_restart: provenance == Provenance::Spawned,
             restart: self.restart(),
+            reattaching: self.reattaching.load(Ordering::SeqCst),
+            reattached_at: self.reattached_at.lock().unwrap().clone(),
         };
         match &*self.phase.lock().unwrap() {
             Phase::Starting => BackendStatus::Starting {
@@ -997,17 +1060,40 @@ fn supervise(app: AppHandle) {
 
             if state.stopping() {
                 state.watching.store(false, Ordering::SeqCst);
+                state.reattaching.store(false, Ordering::SeqCst);
                 return;
             }
+
+            let waiting_to_reattach = state.reattaching.load(Ordering::SeqCst);
+
             // A failure has been recorded and the panel is showing it. Saying
             // it again every second would only churn the log.
-            if matches!(&*state.phase.lock().unwrap(), Phase::Failed(_)) {
+            //
+            // One state is deliberately not that: an adopted backend that
+            // stopped. Nothing there failed that this window could fix, and
+            // the thing it lost can come back on its own, so it keeps asking
+            // the port instead of going quiet.
+            if !waiting_to_reattach && matches!(&*state.phase.lock().unwrap(), Phase::Failed(_)) {
                 state.watching.store(false, Ordering::SeqCst);
                 return;
             }
 
             let provenance = *state.provenance.lock().unwrap();
             let port = *state.port.lock().unwrap();
+            // "Check again" on the panel. It brings the next poll forward; it
+            // never changes what the poll is allowed to conclude.
+            let asked_now = state.take_recheck();
+
+            if waiting_to_reattach {
+                if !asked_now && last_poll.elapsed() < HEALTH_POLL_INTERVAL {
+                    continue;
+                }
+                last_poll = Instant::now();
+                if matches!(probe(port), Probe::Ours) {
+                    reattach(&state, port);
+                }
+                continue;
+            }
 
             let mut trouble = match provenance {
                 Provenance::Spawned => ended(&state),
@@ -1015,7 +1101,7 @@ fn supervise(app: AppHandle) {
             };
 
             if trouble.is_none() {
-                if last_poll.elapsed() < HEALTH_POLL_INTERVAL {
+                if !asked_now && last_poll.elapsed() < HEALTH_POLL_INTERVAL {
                     continue;
                 }
                 last_poll = Instant::now();
@@ -1038,6 +1124,18 @@ fn supervise(app: AppHandle) {
                          starting it, so it has no handle to restart",
                     );
                     state.set_phase(Phase::Failed(StartError::AdoptedStopped { port, detail }));
+                    if provenance == Provenance::Adopted {
+                        logging::shell(&format!(
+                            "still checking port {port} every {}s: if a Job Hunter service \
+                             answers there again this window attaches to it. That is not a \
+                             restart and spends no part of the one-restart budget.",
+                            HEALTH_POLL_INTERVAL.as_secs()
+                        ));
+                        state.reattaching.store(true, Ordering::SeqCst);
+                        continue;
+                    }
+                    // Pending: nothing was ever started, so there is nothing on
+                    // that port to come back and nothing to wait for.
                     state.watching.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -1046,10 +1144,10 @@ fn supervise(app: AppHandle) {
                         .restart()
                         .map(|restart| restart.at)
                         .unwrap_or_else(|| "earlier in this session".to_string());
-                    logging::shell(
+                    logging::shell(&format!(
                         "no second restart: the one automatic restart for this window session \
-                         has been used. Close Job Hunter and open it again.",
-                    );
+                         was used at {restarted}. Close Job Hunter and open it again."
+                    ));
                     state.set_phase(Phase::Failed(StartError::RestartExhausted {
                         detail,
                         restarted,
@@ -1077,6 +1175,38 @@ fn supervise(app: AppHandle) {
             }
         }
     });
+}
+
+/// Attach again to a Job Hunter service that has come back on the port.
+///
+/// Not a restart, and deliberately not routed through one. This window never
+/// owned the process it lost and it does not own this one either: all it did
+/// was keep asking the port until something of ours answered. The one-restart
+/// budget is a rule about processes this window starts, and nothing here starts
+/// anything, so the budget is not touched.
+///
+/// `/api/info` is read again rather than reused. The answer kept at first
+/// adoption describes a process that has exited; whatever is answering now is a
+/// different one and may be running from a different interpreter with its data
+/// somewhere else. Showing the old answer would be the panel's worst failure —
+/// a fact that used to be true.
+fn reattach(state: &BackendState, port: u16) {
+    let origin = fetch_origin(port);
+    match (&origin.interpreter, &origin.data_dir) {
+        (Some(interpreter), Some(data_dir)) => logging::shell(&format!(
+            "re-attached to a Job Hunter service on port {port}: it reports it is running \
+             {interpreter} with its data in {data_dir}. This is a different process from the \
+             one that stopped; re-attaching is not a restart and none has been used."
+        )),
+        _ => logging::shell(&format!(
+            "re-attached to a Job Hunter service on port {port}; it did not say where it is \
+             running from. Re-attaching is not a restart and none has been used."
+        )),
+    }
+    state.set_origin(origin);
+    *state.reattached_at.lock().unwrap() = Some(logging::stamp());
+    state.set_phase(Phase::Ready);
+    state.reattaching.store(false, Ordering::SeqCst);
 }
 
 /// Start the backend again, on the same port, after a failed poll.
@@ -1638,9 +1768,115 @@ mod tests {
         };
         let summary = error.summary();
         assert!(summary.contains("nothing is listening on port 8756"), "{summary}");
-        assert!(summary.contains("2026-09-12 09:14:02Z"), "{summary}");
         assert!(summary.contains("already used"), "{summary}");
         assert!(!error.remedy().is_empty());
+    }
+
+    /// One clock per screen. The sentence carries no stamp of its own, because
+    /// the panel prints local time and a UTC stamp welded into the sentence
+    /// would sit directly above a local one and disagree with it.
+    #[test]
+    fn the_exhausted_failure_carries_its_instant_beside_the_sentence_not_inside_it() {
+        let error = StartError::RestartExhausted {
+            detail: "nothing is listening on port 8756".to_string(),
+            restarted: "2026-09-12 09:14:02Z".to_string(),
+        };
+        let failure = error.present();
+        assert!(
+            !failure.summary.contains("09:14:02"),
+            "the sentence must not carry a clock of its own: {}",
+            failure.summary
+        );
+        assert_eq!(failure.at.as_deref(), Some("2026-09-12 09:14:02Z"));
+
+        // Every other failure is about a condition rather than a moment.
+        assert!(StartError::Stopped {
+            detail: "the process exited".to_string()
+        }
+        .present()
+        .at
+        .is_none());
+    }
+
+    /// The remedy for a service this window attached to must match what the
+    /// window will actually do: keep checking that port and attach again. It
+    /// used to say "close Job Hunter and open it again", which was the only
+    /// recovery available before re-attachment existed.
+    #[test]
+    fn the_adopted_remedy_says_the_window_re_attaches_without_being_closed() {
+        let remedy = StartError::AdoptedStopped {
+            port: 8756,
+            detail: "nothing is listening on port 8756".to_string(),
+        }
+        .remedy();
+        assert!(remedy.contains("8756"), "{remedy}");
+        assert!(remedy.contains("without being closed"), "{remedy}");
+    }
+
+    /// Waiting to re-attach is a state the panel has to be able to see, and it
+    /// is never a restart: the budget stays untouched through the whole of it.
+    #[test]
+    fn waiting_to_re_attach_is_visible_and_costs_no_restart() {
+        quiet();
+        let state = BackendState::default();
+        state.set_provenance(Provenance::Adopted);
+
+        let BackendStatus::Starting { supervision, .. } = state.status() else {
+            panic!("a fresh state is starting");
+        };
+        assert!(!supervision.reattaching, "nothing is waiting yet");
+
+        state.reattaching.store(true, Ordering::SeqCst);
+        let BackendStatus::Starting { supervision, .. } = state.status() else {
+            panic!("a fresh state is starting");
+        };
+        assert!(supervision.reattaching);
+        assert!(
+            supervision.restart.is_none(),
+            "re-attaching is not a restart and must not spend the budget"
+        );
+        assert!(!supervision.can_restart, "an adopted backend is never restartable");
+        assert!(supervision.reattached_at.is_none(), "it has not come back yet");
+    }
+
+    /// A window that recovered on its own looks exactly like one that was never
+    /// broken. The panel needs the moment it happened, or the minutes the
+    /// service was gone leave no trace on the screen that exists to show them.
+    #[test]
+    fn a_completed_re_attachment_records_when_it_happened() {
+        quiet();
+        let state = BackendState::default();
+        state.set_provenance(Provenance::Adopted);
+        state.reattaching.store(true, Ordering::SeqCst);
+
+        // The port is closed here, so this exercises the bookkeeping rather
+        // than the probe: what must survive is the stamp, and the budget.
+        reattach(&state, 0);
+
+        let BackendStatus::Ready { supervision, .. } = state.status() else {
+            panic!("re-attaching leaves the backend ready");
+        };
+        assert!(!supervision.reattaching, "the wait is over");
+        assert!(
+            supervision.reattached_at.is_some_and(|at| !at.is_empty()),
+            "the panel is told when it happened"
+        );
+        assert!(
+            supervision.restart.is_none(),
+            "re-attaching spends no part of the one-restart budget"
+        );
+    }
+
+    /// "Check again" asks the supervisor to bring its next check forward. The
+    /// request is taken exactly once, so one press is one extra check.
+    #[test]
+    fn a_recheck_request_is_taken_once() {
+        quiet();
+        let state = BackendState::default();
+        assert!(!state.take_recheck(), "nothing is pending to begin with");
+        state.request_recheck();
+        assert!(state.take_recheck());
+        assert!(!state.take_recheck(), "one request is one check");
     }
 
     /// The adopted failure has to say why no restart is coming, and name the

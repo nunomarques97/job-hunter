@@ -89,9 +89,21 @@ export function SettingsView() {
         <Card className="span-6">
           <CardHead title="Where your data lives" icon="file" />
           <div className="card-body col" style={{ gap: 10 }}>
-            {info.loading ? (
+            {info.loading && !info.data ? (
               <Skeleton height={120} />
-            ) : info.data ? (
+            ) : !info.data ? (
+              // An empty card is its own kind of dishonesty: it reads as a
+              // section with nothing in it rather than an answer nobody could
+              // give. Only the service knows where it keeps things.
+              <Notice tone="warn">
+                <div className="t-small">The service is not answering.</div>
+                <div className="t-caption secondary">
+                  {info.error ?? 'It did not reply.'} Where the data, the database and the logs
+                  live is what the service reports about itself, so nothing can be said about it
+                  until it does. Diagnostics has the paths this window resolved.
+                </div>
+              </Notice>
+            ) : (
               <>
                 <InfoRow label="Data folder" value={info.data.data_dir} mono />
                 <InfoRow label="Database" value={info.data.database.path || info.data.database.url} mono />
@@ -105,7 +117,7 @@ export function SettingsView() {
                   postings and to your local model, and to nothing else.
                 </Notice>
               </>
-            ) : null}
+            )}
           </div>
         </Card>
 
@@ -116,6 +128,25 @@ export function SettingsView() {
             subtitle="What each source can and cannot do"
           />
           <div className="card-body flush">
+            {!sources.data ? (
+              // The list of sources and what each one may do comes from the
+              // service. A table of headers over nothing would read as "no
+              // sources", which is a different and untrue statement.
+              <div style={{ padding: '0 16px 16px' }}>
+                {sources.loading ? (
+                  <Skeleton height={120} />
+                ) : (
+                  <Notice tone="warn">
+                    <div className="t-small">The service is not answering.</div>
+                    <div className="t-caption secondary">
+                      {sources.error ?? 'It did not reply.'} What each source can and cannot do is
+                      declared by the service, so this table stays empty rather than showing an
+                      answer this window invented.
+                    </div>
+                  </Notice>
+                )}
+              </div>
+            ) : (
             <div className="table-wrap">
               <table className="data">
                 <thead>
@@ -162,6 +193,7 @@ export function SettingsView() {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         </Card>
 

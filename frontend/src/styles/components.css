@@ -66,9 +66,42 @@
   text-align: left;
 }
 
-.rail-item:hover {
+.rail-item:hover:not(:disabled) {
   background: var(--surface-2);
   color: var(--text-primary);
+}
+
+/* A screen that cannot open without the local service. Readable, not hidden:
+   the label is the point, and the muted colour plus the "no service" badge
+   beside it say why it does not respond. */
+.rail-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.rail-item-mark {
+  margin-left: auto;
+  display: flex;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.rail-note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 2px 4px 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--status-warn-bg);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+.rail-note svg {
+  flex: none;
+  margin-top: 1px;
 }
 
 .rail-item.active {
@@ -168,6 +201,15 @@
 
 .search input::placeholder {
   color: var(--text-muted);
+}
+
+/* With no service there is nothing to search. The field stays where it is and
+   says so, rather than becoming a grey block that implies one is arriving. */
+.search input:disabled {
+  background: var(--surface-2);
+  border-color: var(--border);
+  cursor: default;
+  padding-right: 12px;
 }
 
 .search input:focus {

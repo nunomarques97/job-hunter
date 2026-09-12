@@ -1,5 +1,5 @@
 /** The application shell: navigation rail, command bar and page host. */
-import { useEffect, useRef, useState, type ComponentType } from 'react';
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 
 import { Icon } from '../components/Icon';
 import { Button, Spinner, Toasts } from '../components/ui';
@@ -33,7 +33,31 @@ const VIEWS: Record<ViewId, ComponentType> = {
   diagnostics: DiagnosticsView,
 };
 
-export function Shell() {
+/**
+ * What the shell shows when the backend is not answering.
+ *
+ * The chrome used to be replaced by a skeleton of itself in this state: ten
+ * blank pills where the labels are, a grey block where the search is, no
+ * footer. A skeleton means "this is arriving"; nothing was arriving, and for a
+ * backend that has failed nothing ever will. Every label in the rail is static
+ * text that needs no service, so the rail renders itself, says which of its
+ * screens cannot work and why, and keeps the two that can — Settings and the
+ * panel it leads to — reachable with the mouse.
+ */
+export interface Offline {
+  /** The condition, as one sentence. Shown in the rail note and in tooltips. */
+  condition: string;
+  /** The same condition in two or three words, for the footer, where the
+   *  sentence would truncate into an ellipsis and say nothing at all. */
+  short: string;
+  /** What to show in the page area for a screen that needs the service. */
+  page: ReactNode;
+}
+
+/** The screens that need no backend, so they stay live when there is none. */
+const WORKS_OFFLINE = new Set<ViewId>(['settings', 'diagnostics']);
+
+export function Shell({ offline }: { offline?: Offline } = {}) {
   const { view, navigate, toasts, dismiss, notify, invalidate, revision } = useApp();
   const [collapsed, setCollapsed] = useState(window.innerWidth < 1100);
   const [running, setRunning] = useState(false);
@@ -77,9 +101,16 @@ export function Shell() {
   };
 
   const View = VIEWS[view];
+  // With no service, a screen that needs one gives way to the condition itself:
+  // the waiting card, or the diagnostic panel. Settings and Diagnostics are
+  // exempt, which is what makes the panel reachable by clicking rather than
+  // only by waiting for it to appear.
+  const displaced = Boolean(offline) && !WORKS_OFFLINE.has(view);
   // Diagnostics has no rail item of its own, so the item it belongs under stays
-  // lit rather than the rail going blank.
-  const railView = RAIL_PARENT[view] ?? view;
+  // lit rather than the rail going blank. Nothing is lit while the page has
+  // been displaced: the rail would otherwise point at a screen that is not the
+  // one on show.
+  const railView = displaced ? null : RAIL_PARENT[view] ?? view;
   const isRunning = automation.data?.is_running ?? false;
   const name = profile.data?.full_name?.trim() || 'Your profile';
   const initials = name
@@ -106,26 +137,83 @@ export function Shell() {
         </div>
 
         <div className="rail-nav">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              className={`rail-item ${railView === item.id ? 'active' : ''}`}
-              onClick={() => navigate(item.id)}
-              title={collapsed ? item.label : undefined}
-              aria-current={railView === item.id ? 'page' : undefined}
-            >
-              <Icon name={item.icon} size={18} />
-              {!collapsed && <span className="truncate">{item.label}</span>}
-              {!collapsed && item.id === 'automation' && isRunning && (
-                <span className="rail-item-badge" style={{ color: 'var(--status-success)' }}>
-                  live
-                </span>
-              )}
-            </button>
-          ))}
+          {offline && !collapsed && (
+            <div className="rail-note" role="status">
+              <Icon name="alert" size={13} color="var(--status-warn)" />
+              <span>
+                {offline.condition} The screens below read from it and cannot open. Settings, and
+                Diagnostics under it, still work.
+              </span>
+            </div>
+          )}
+          {NAV.map((item) => {
+            // Disabled, not hidden and not faked. A rail that drops what it
+            // cannot do looks like a smaller product; one that leaves it
+            // clickable takes the user to an empty screen.
+            const blocked = Boolean(offline) && !WORKS_OFFLINE.has(item.id);
+            return (
+              <button
+                key={item.id}
+                className={`rail-item ${railView === item.id ? 'active' : ''}`}
+                onClick={() => navigate(item.id)}
+                disabled={blocked}
+                title={
+                  blocked
+                    ? `${item.label} needs the local service. ${offline?.condition ?? ''}`
+                    : collapsed
+                      ? item.label
+                      : undefined
+                }
+                aria-current={railView === item.id ? 'page' : undefined}
+              >
+                <Icon name={item.icon} size={18} />
+                {!collapsed && <span className="truncate">{item.label}</span>}
+                {/* A marker rather than a word per row. The reason is written
+                    once, above the group; ten copies of it would push the
+                    longest label — "CV & Cover Letter" — into an ellipsis, and
+                    a label nobody can read is the defect this is fixing. */}
+                {!collapsed && blocked && (
+                  <span className="rail-item-mark">
+                    <Icon name="alert" size={13} />
+                  </span>
+                )}
+                {!collapsed && item.id === 'automation' && isRunning && (
+                  <span className="rail-item-badge" style={{ color: 'var(--status-success)' }}>
+                    live
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         <div className="rail-foot">
+          {offline ? (
+            // The footer used to disappear in this state, which read as a
+            // window still assembling itself. It is the one piece of chrome
+            // that already had a status line in it, so it says the condition
+            // and leads to the screen that explains it.
+            <button
+              className="rail-user"
+              onClick={() => navigate('diagnostics')}
+              title={offline.condition}
+            >
+              <span className="avatar" style={{ background: 'var(--status-danger-bg)' }}>
+                <Icon name="alert" size={15} color="var(--status-danger)" />
+              </span>
+              {!collapsed && (
+                <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                  <span className="t-small truncate" style={{ display: 'block' }}>
+                    {offline.short}
+                  </span>
+                  <span className="t-caption muted truncate" style={{ display: 'block' }}>
+                    Open Diagnostics
+                  </span>
+                </span>
+              )}
+              {!collapsed && <Icon name="chevronRight" size={14} color="var(--text-muted)" />}
+            </button>
+          ) : (
           <button className="rail-user" onClick={() => navigate('profile')}>
             <span className="avatar">{initials || '—'}</span>
             {!collapsed && (
@@ -140,6 +228,7 @@ export function Shell() {
             )}
             {!collapsed && <Icon name="chevronRight" size={14} color="var(--text-muted)" />}
           </button>
+          )}
         </div>
       </nav>
 
@@ -159,14 +248,22 @@ export function Shell() {
             <input
               ref={searchRef}
               value={searchTerm}
-              placeholder="Search jobs, companies or locations"
+              // The field is the same field, saying what it cannot do. It was a
+              // grey block here, which is a promise that a search box is on its
+              // way to a window where searching is the thing that is broken.
+              placeholder={
+                offline
+                  ? 'Search needs the local service, which is not answering'
+                  : 'Search jobs, companies or locations'
+              }
+              disabled={Boolean(offline)}
               onChange={(event) => setSearchTerm(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') submitSearch();
               }}
               aria-label="Search jobs"
             />
-            <span className="kbd">Ctrl K</span>
+            {!offline && <span className="kbd">Ctrl K</span>}
           </div>
 
           <div className="spacer" />
@@ -202,16 +299,19 @@ export function Shell() {
             icon="play"
             onClick={runAutomation}
             busy={running}
-            disabled={isRunning}
+            disabled={isRunning || Boolean(offline)}
+            title={
+              offline
+                ? `An automation run needs the local service. ${offline.condition}`
+                : undefined
+            }
           >
             Run Automation
           </Button>
           <Button variant="ghost" icon="settings" title="Settings" onClick={() => navigate('settings')} />
         </header>
 
-        <main className="page">
-          <View />
-        </main>
+        <main className="page">{displaced ? offline?.page : <View />}</main>
       </div>
 
       <Toasts toasts={toasts} onDismiss={dismiss} />

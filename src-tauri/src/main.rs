@@ -16,6 +16,19 @@ fn backend_status(state: tauri::State<'_, BackendState>) -> BackendStatus {
     state.status()
 }
 
+/// What "Check again" on the diagnostic panel does to the shell.
+///
+/// The panel's own reload only re-asks the backend and the shell for what they
+/// already decided. This asks the supervisor to bring its next check forward,
+/// so a service that has come back on the port is attached to now rather than
+/// up to ten seconds from now. It asks and returns; the answer arrives through
+/// `backend_status` like every other change of state.
+#[tauri::command]
+fn backend_recheck(state: tauri::State<'_, BackendState>) -> BackendStatus {
+    state.request_recheck();
+    state.status()
+}
+
 #[derive(Serialize)]
 struct LogTail {
     path: String,
@@ -59,6 +72,7 @@ fn main() {
         .manage(BackendState::default())
         .invoke_handler(tauri::generate_handler![
             backend_status,
+            backend_recheck,
             backend_log_tail,
             open_log_folder
         ])

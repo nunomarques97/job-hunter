@@ -1,22 +1,26 @@
 /**
- * What the window shows before the backend answers, and whenever it stops.
+ * Whether the backend is answering, and what the window shows while it is not.
  *
- * The window is on screen within a second of launch now, so something has to
- * be there. This is that something: the shell's own furniture in its loading
- * state, one card saying what is happening, and the log as it is written.
+ * The window is on screen within a second of launch, so something has to be
+ * there before the service is. This decides what: one card saying what is
+ * happening while it is still plausibly on its way, and the diagnostic panel
+ * once waiting has turned into a problem — the shell reported a failure, or
+ * twenty seconds passed with no answer. The panel is the screen for a backend
+ * that is not there, and there is no reason to show anything less complete just
+ * because the app has not opened yet.
  *
- * Once waiting turns into a real problem — the shell reported a failure, or
- * twenty seconds passed with no answer — the waiting card gives way to the
- * diagnostic panel itself, rather than to a second, thinner version of it. The
- * panel is the screen for a backend that is not there, and there is no reason
- * to show anything less complete just because the app has not opened yet.
+ * What it no longer does is draw its own chrome. It used to render a skeleton
+ * rail, a skeleton search field and no footer, which is the loading state of a
+ * window whose labels are static text and never needed the backend at all. The
+ * real shell renders in every state now and is told the condition instead, so
+ * the rail says which screens cannot open and why, and Settings and the panel
+ * stay reachable with the mouse.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
-import { Icon } from '../components/Icon';
-import { Card, CardHead, Notice, Skeleton, Spinner, Toasts } from '../components/ui';
+import { Card, CardHead, Notice, Spinner } from '../components/ui';
 import { api } from '../lib/api';
-import { useApp } from '../app/AppState';
+import { Shell } from '../app/Shell';
 import { backendStatus, type StartFailure } from '../lib/shell';
 import { DiagnosticsView } from './DiagnosticsView';
 
@@ -56,8 +60,7 @@ type Phase =
   | { kind: 'failed'; failure: StartFailure }
   | { kind: 'ready' };
 
-export function StartupView({ children }: { children: ReactNode }) {
-  const { toasts, dismiss } = useApp();
+export function StartupView() {
   const [phase, setPhase] = useState<Phase>({ kind: 'waiting' });
   const [elapsed, setElapsed] = useState(0);
 
@@ -142,54 +145,29 @@ export function StartupView({ children }: { children: ReactNode }) {
     void check();
   };
 
-  if (ready) return <>{children}</>;
+  if (ready) return <Shell />;
 
-  return (
-    <div className="shell">
-      <nav className="rail" aria-label="Main">
-        <div className="rail-brand">
-          <span className="rail-mark">
-            <Icon name="briefcase" size={17} color="#fff" />
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <div className="t-h3 truncate">Job Hunter</div>
-            <div className="t-caption muted truncate">Find. Match. Apply. Faster.</div>
-          </div>
-        </div>
-        <div className="rail-nav" aria-hidden="true">
-          {Array.from({ length: 10 }).map((_, index) => (
-            <div key={index} className="row" style={{ gap: 12, height: 40, padding: '0 12px' }}>
-              <Skeleton height={18} width={18} radius={6} />
-              <Skeleton height={12} width={`${46 + ((index * 13) % 34)}%`} />
-            </div>
-          ))}
-        </div>
-      </nav>
+  // The same shell, told what is wrong with it. The condition is one sentence
+  // because it is read in three places — the rail, the footer and the tooltip
+  // on every screen that cannot open — and they must not word it three ways.
+  const starting = phase.kind === 'waiting';
+  const condition = starting
+    ? 'The local service is still starting.'
+    : 'The local service is not running.';
+  const short = starting ? 'Service starting' : 'Service not running';
 
-      <div className="main">
-        <header className="commandbar">
-          <Skeleton height={34} width={360} radius={10} />
-          <div className="spacer" />
-          <Skeleton height={34} width={132} radius={10} />
-        </header>
-
-        <main className="page">
-          {phase.kind === 'waiting' ? (
-            <div className="page-inner">
-              <WaitingCard elapsed={elapsed} />
-            </div>
-          ) : (
-            // Failed, or twenty seconds with no answer. Either way the question
-            // has stopped being "is it nearly there" and started being "what is
-            // wrong", which is the panel's question.
-            <DiagnosticsView onRecheck={retry} />
-          )}
-        </main>
-      </div>
-
-      <Toasts toasts={toasts} onDismiss={dismiss} />
+  const page: ReactNode = starting ? (
+    <div className="page-inner">
+      <WaitingCard elapsed={elapsed} />
     </div>
+  ) : (
+    // Failed, or twenty seconds with no answer. Either way the question has
+    // stopped being "is it nearly there" and started being "what is wrong",
+    // which is the panel's question.
+    <DiagnosticsView onRecheck={retry} />
   );
+
+  return <Shell offline={{ condition, short, page }} />;
 }
 
 function WaitingCard({ elapsed }: { elapsed: number }) {
