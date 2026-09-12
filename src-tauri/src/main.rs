@@ -79,6 +79,13 @@ fn main() {
         .setup(|app| {
             logging::shell("Job Hunter is starting");
 
+            // Before the port, before the window, before anything is written:
+            // a setting that names a place has to name one that does not move.
+            // A relative value here is what put a database inside a build
+            // output directory once already, and a migration against the wrong
+            // file is worse than no migration at all.
+            backend::check_environment(app.handle());
+
             // Which port the backend will be on has to be settled before the
             // window exists, because the answer goes into the window's
             // initialization script. A free port costs a refused loopback

@@ -7,6 +7,8 @@ No server, no network, no model. Run with:
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import logging
 import os
 import sys
@@ -26,7 +28,10 @@ os.environ["JOB_HUNTER_DATA_DIR"] = str(_DATA_DIR)
 os.environ["JOB_HUNTER_LLM_PROVIDER"] = "fake"
 os.environ["JOB_HUNTER_OLLAMA_MODEL_COVER_LETTER"] = "pinned-model:30b"
 
+from app.core.config import resolve_data_dir, resolve_database_url  # noqa: E402
 from app.core.logging import MASK, Redactor, redact_text  # noqa: E402
+from app.core.startup import MARKER, StartupRefusal  # noqa: E402
+from app.core.startup import report as report_refusal  # noqa: E402
 from app.db.base import utcnow  # noqa: E402
 from app.models.candidate import Candidate  # noqa: E402
 from app.models.enums import RemoteType, Seniority  # noqa: E402
@@ -516,6 +521,98 @@ check(
     "a long report is not cut off as one string",
     "line 39" in long_report,
     long_report[-120:],
+)
+
+
+# -- a setting that names a place must name one that does not move -------------
+#
+# TASK 008 requirement 1. Both variables were used verbatim, so a relative value
+# resolved against whatever directory happened to launch the process: the same
+# setting meant one folder under the desktop shell and another under a terminal.
+# That is how a second database came to sit inside a build output directory, and
+# a migration run against the wrong file is worse than no migration at all.
+
+_HERE = Path("C:/somewhere/else") if os.name == "nt" else Path("/somewhere/else")
+
+
+def refusal_from(call) -> StartupRefusal | None:
+    try:
+        call()
+    except StartupRefusal as refused:
+        return refused
+    return None
+
+
+relative_dir = refusal_from(lambda: resolve_data_dir(".tmpdata", cwd=_HERE))
+check("a relative data directory is refused", relative_dir is not None)
+if relative_dir is not None:
+    check("the refusal is typed", relative_dir.kind == "relative_path_setting", relative_dir.kind)
+    check(
+        "the refusal names the variable",
+        "JOB_HUNTER_DATA_DIR" in relative_dir.summary,
+        relative_dir.summary,
+    )
+    check(
+        "the refusal says where the value would have landed",
+        any(str(_HERE / ".tmpdata") in line for line in relative_dir.probed),
+        str(relative_dir.probed),
+    )
+    check(
+        "the refusal says what a good value looks like",
+        "full path" in relative_dir.remedy,
+        relative_dir.remedy,
+    )
+
+check("no override means no data directory override", resolve_data_dir(None) is None)
+check("an empty override is not an override", resolve_data_dir("   ") is None)
+check(
+    "a full path is accepted unchanged",
+    resolve_data_dir(str(_DATA_DIR)) == Path(str(_DATA_DIR)),
+)
+
+relative_url = refusal_from(
+    lambda: resolve_database_url("sqlite:///.tmpdata/job_hunter.db", cwd=_HERE)
+)
+check("a relative sqlite URL is refused", relative_url is not None)
+if relative_url is not None:
+    check(
+        "the URL refusal names the variable",
+        "JOB_HUNTER_DATABASE_URL" in relative_url.summary,
+        relative_url.summary,
+    )
+
+absolute_url = f"sqlite:///{(_DATA_DIR / 'job_hunter.db').as_posix()}"
+check("a sqlite URL naming a full path is accepted", resolve_database_url(absolute_url) == absolute_url)
+for harmless in ("sqlite://", "sqlite:///:memory:", "postgresql://host/db"):
+    # None of these names a file, so none of them can be moved by a working
+    # directory. Refusing them would be a refusal with no defect behind it.
+    check(f"{harmless} is not a path setting", resolve_database_url(harmless) == harmless)
+
+# The marked line is the contract between the backend and the desktop shell.
+# Both halves have to agree on it exactly, so the constant is compared against
+# the Rust source rather than trusted twice.
+_shell_logging = (Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "logging.rs").read_text(
+    encoding="utf-8"
+)
+check(
+    "the shell looks for the marker this backend writes",
+    f'pub const REFUSAL_MARKER: &str = "{MARKER}";' in _shell_logging,
+    MARKER,
+)
+
+_reported = io.StringIO()
+report_refusal(
+    StartupRefusal(kind="k", summary="s", remedy="r", probed=["p"]),
+    _reported,
+)
+_lines = _reported.getvalue().splitlines()
+check("the refusal is marked on its first line", _lines[0].startswith(MARKER), _lines[0])
+_parsed = json.loads(_lines[0][len(MARKER) :])
+check("the marked line carries the whole refusal", _parsed["kind"] == "k" and _parsed["probed"] == ["p"])
+check(
+    "the refusal is also written as sentences",
+    any("What to do: r" == line for line in _lines),
+    str(_lines),
 )
 
 

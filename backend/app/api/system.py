@@ -99,9 +99,10 @@ def database_file(url: str) -> Path | None:
     if not raw:
         return None
     path = Path(raw)
-    # A relative URL resolves against the working directory, which is the
-    # defect TASK 008 owns. It is reported as it actually resolves, so a
-    # database somewhere unexpected is visible rather than quietly corrected.
+    # The configuration refuses a relative URL before anything opens it, so
+    # every URL that reaches here names a full path. The fallback stays because
+    # a database file is what this panel is for: if one ever did arrive
+    # relative, it is shown where it actually resolves rather than hidden.
     return path if path.is_absolute() else (Path.cwd() / path).resolve()
 
 

@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+from .startup import StartupRefusal
+
 
 def _env(name: str, default: str) -> str:
     return os.getenv(f"JOB_HUNTER_{name}", default)
@@ -34,15 +36,82 @@ def _env_bool(name: str, default: bool) -> bool:
     return _env(name, "1" if default else "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: The prefix a SQLite URL uses for a file on disk.
+_SQLITE_FILE_PREFIX = "sqlite:///"
+
+#: SQLite URLs that name no file at all. Neither can be relative to anything,
+#: so neither is checked against the working directory.
+_SQLITE_MEMORY_URLS = {"sqlite://", "sqlite:///:memory:"}
+
+
+def _refuse_relative(variable: str, value: str, resolves_to: Path) -> StartupRefusal:
+    """The refusal both path variables raise.
+
+    Worded once because the two variables fail for exactly the same reason and
+    a person fixing one has to do the same thing to the other.
+    """
+    return StartupRefusal(
+        kind="relative_path_setting",
+        summary=(
+            f"{variable} is set to a relative path, and a relative path means a different "
+            f"place every time the application is started from a different folder."
+        ),
+        remedy=f"Set {variable} to a full path beginning with a drive letter, or unset it.",
+        probed=[
+            f"{variable} = {value}",
+            f"from this working directory it would mean {resolves_to}",
+        ],
+    )
+
+
+def resolve_data_dir(override: str | None, *, cwd: Path | None = None) -> Path | None:
+    """The data directory an override names, or ``None`` when there is none.
+
+    A relative value is refused rather than resolved. It was silently resolved
+    against the working directory until this check existed, which is how a
+    second database came to sit inside a build output directory: the same
+    setting meant one place when the shell launched the backend and another
+    when a terminal did.
+    """
+    if override is None or not override.strip():
+        return None
+    path = Path(override).expanduser()
+    if not path.is_absolute():
+        here = cwd if cwd is not None else Path.cwd()
+        raise _refuse_relative("JOB_HUNTER_DATA_DIR", override, (here / path).resolve())
+    return path
+
+
+def resolve_database_url(override: str | None, *, cwd: Path | None = None) -> str:
+    """The database URL an override names, or ``""`` when there is none.
+
+    Only a SQLite URL naming a file is checked: an in-memory database and a
+    server URL have no path that the working directory could move.
+    """
+    if override is None or not override.strip():
+        return ""
+    url = override.strip()
+    if url in _SQLITE_MEMORY_URLS or not url.startswith(_SQLITE_FILE_PREFIX):
+        return url
+    raw = url[len(_SQLITE_FILE_PREFIX) :]
+    if not raw or raw == ":memory:":
+        return url
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        here = cwd if cwd is not None else Path.cwd()
+        raise _refuse_relative("JOB_HUNTER_DATABASE_URL", override, (here / path).resolve())
+    return url
+
+
 def default_data_dir() -> Path:
     """Per-user writable data directory.
 
     A packaged desktop app cannot write next to its executable, so application
     data lives under the operating system's application-data directory.
     """
-    override = os.getenv("JOB_HUNTER_DATA_DIR")
-    if override:
-        return Path(override).expanduser()
+    override = resolve_data_dir(os.getenv("JOB_HUNTER_DATA_DIR"))
+    if override is not None:
+        return override
     if os.name == "nt":
         base = os.getenv("LOCALAPPDATA") or os.path.expanduser("~")
         return Path(base) / "JobHunter"
@@ -79,7 +148,9 @@ class Settings:
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", False))
 
     data_dir: Path = field(default_factory=default_data_dir)
-    database_url: str = field(default_factory=lambda: _env("DATABASE_URL", ""))
+    database_url: str = field(
+        default_factory=lambda: resolve_database_url(os.getenv("JOB_HUNTER_DATABASE_URL"))
+    )
 
     llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "ollama"))
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))

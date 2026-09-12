@@ -24,12 +24,54 @@ const KEEP_FILES: usize = 7;
 /// Writes are serialised: the shell and both pipe readers share one file.
 static WRITING: Mutex<()> = Mutex::new(());
 
+/// The line a backend writes to say it has refused to serve, and why.
+///
+/// The backend prints it before it stops. Everything after the prefix is the
+/// JSON body of `backend::Refusal`. `backend/app/core/startup.py` is the other
+/// half.
+pub const REFUSAL_MARKER: &str = "JOB-HUNTER-STARTUP-REFUSED ";
+
+/// The last refusal a backend process printed, waiting to be read once.
+static REFUSAL: Mutex<Option<String>> = Mutex::new(None);
+
+/// Forget any refusal left over from an earlier process.
+///
+/// Called before each spawn. A refusal from the process that just stopped must
+/// never be read as the diagnosis of the one starting now.
+pub fn clear_refusal() {
+    if let Ok(mut slot) = REFUSAL.lock() {
+        *slot = None;
+    }
+}
+
+/// Take the refusal a backend printed, if one arrived.
+pub fn take_refusal() -> Option<String> {
+    REFUSAL.lock().ok()?.take()
+}
+
+/// The data directory the environment names, when it names one that can be
+/// used.
+///
+/// A relative value is deliberately not resolved here. It would resolve
+/// against whatever directory happened to launch the shell, which is the
+/// defect this setting had: the same value meant two different folders
+/// depending on who started the process. `backend::check_environment` refuses
+/// it and says so on the panel; this returns `None` so the log still lands
+/// somewhere a person can find, which is where that refusal has to be written.
+pub fn env_data_dir() -> Option<PathBuf> {
+    let value = std::env::var("JOB_HUNTER_DATA_DIR").ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    path.is_absolute().then_some(path)
+}
+
 /// Where the data directory is, matching what the backend decides for itself.
 fn data_dir() -> PathBuf {
-    if let Ok(override_path) = std::env::var("JOB_HUNTER_DATA_DIR") {
-        if !override_path.trim().is_empty() {
-            return PathBuf::from(override_path);
-        }
+    if let Some(path) = env_data_dir() {
+        return path;
     }
     if cfg!(windows) {
         let base = std::env::var("LOCALAPPDATA")
@@ -214,6 +256,14 @@ pub fn pipe<R: Read + Send + 'static>(source: R, tag: &'static str) {
                 continue;
             }
             write(&format!("{tag} {line}"));
+            // A refusal is kept as well as logged. The log is what a person
+            // reads afterwards; this is what the panel shows now, in the
+            // backend's own words rather than as "the process exited".
+            if let Some(payload) = line.trim().strip_prefix(REFUSAL_MARKER) {
+                if let Ok(mut slot) = REFUSAL.lock() {
+                    *slot = Some(payload.trim().to_string());
+                }
+            }
         }
     });
 }

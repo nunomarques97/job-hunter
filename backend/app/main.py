@@ -9,20 +9,35 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
-from .api import api_router
 from .core.config import get_settings
-from .core.logging import configure_logging, log_slow_requests
-from .db import init_db
-from .llm import close_llm
+from .core.startup import EXIT_REFUSED, StartupRefusal, report
+
+# Read before anything else in this package is imported.
+#
+# Every other module here reaches the configuration eventually: the session
+# module builds the engine at import time, and building it creates the data
+# directory. So a setting this application refuses to trust has to be caught
+# above those imports, or the first thing a wrong path does is create a folder
+# somewhere nobody asked for — and the failure arrives as an import traceback
+# rather than as a sentence. This is the one place in the package where the
+# import order is load-bearing.
+try:
+    settings = get_settings()
+except StartupRefusal as refusal:
+    report(refusal)
+    raise SystemExit(EXIT_REFUSED) from None
+
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from .api import api_router  # noqa: E402
+from .core.logging import configure_logging, log_slow_requests  # noqa: E402
+from .db import init_db  # noqa: E402
+from .llm import close_llm  # noqa: E402
 
 configure_logging()
 logger = logging.getLogger("job_hunter")
-
-settings = get_settings()
 
 
 @asynccontextmanager

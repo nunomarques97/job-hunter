@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::logging;
@@ -81,6 +81,30 @@ const SUPERVISOR_TICK: Duration = Duration::from_secs(1);
 /// ever have of a process it did not start, and it is read once.
 const ORIGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long to keep looking for a refusal after the backend process has ended.
+///
+/// The refusal is printed and flushed before the process exits, but it reaches
+/// this shell through a pipe read on another thread, so `try_wait` can report
+/// the exit a few milliseconds before the line has been parsed. Without this
+/// wait the panel would show "the process exited with code 78" instead of the
+/// sentence the backend wrote to explain it.
+const REFUSAL_GRACE: Duration = Duration::from_millis(1500);
+
+/// A backend's own account of why it will not serve.
+///
+/// Deserialised from the marked line it prints before stopping. The words are
+/// the backend's: it is the half of the application that knows what a
+/// migration or a path setting means, and a sentence rewritten here would
+/// drift away from the one in the log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Refusal {
+    pub kind: String,
+    pub summary: String,
+    pub remedy: String,
+    #[serde(default)]
+    pub probed: Vec<String>,
+}
+
 /// Why the backend is not running.
 ///
 /// This is a typed value rather than a message so the interface can tell the
@@ -129,6 +153,26 @@ pub enum StartError {
     /// different answer, and the panel must not offer an action that cannot
     /// work.
     AdoptedStopped { port: u16, detail: String },
+    /// A setting that names a place names a relative one.
+    ///
+    /// `JOB_HUNTER_DATA_DIR` and `JOB_HUNTER_DATABASE_URL` were taken verbatim
+    /// until this check existed, so a relative value meant one folder when the
+    /// shell launched the backend and another when a terminal did - which is
+    /// how a second database came to sit inside a build output directory.
+    /// Nothing is started while one of them is relative: a migration run
+    /// against the wrong file is worse than no migration at all.
+    EnvironmentPathRelative {
+        variable: String,
+        value: String,
+        probed: Vec<String>,
+    },
+    /// The backend started, refused, and stopped before it served anything.
+    ///
+    /// Separate from `Stopped` because nothing went wrong with the process: it
+    /// read its configuration or its database, decided it must not serve, and
+    /// said why. The reason is carried verbatim rather than summarised, so the
+    /// panel shows the backend's sentence and not the shell's guess.
+    BackendRefused { refusal: Refusal },
 }
 
 /// A failure flattened into the fields an interface needs.
@@ -139,7 +183,11 @@ pub enum StartError {
 #[derive(Debug, Clone, Serialize)]
 pub struct StartFailure {
     /// Which case this is, for a screen that wants to branch on it.
-    pub kind: &'static str,
+    ///
+    /// A `String` rather than a fixed name because one of the cases is the
+    /// backend refusing: the backend names its own kind and the shell passes
+    /// it through instead of flattening every refusal into one word.
+    pub kind: String,
     pub summary: String,
     pub remedy: String,
     pub probed: Vec<String>,
@@ -166,17 +214,19 @@ impl StartError {
         }
     }
 
-    fn kind(&self) -> &'static str {
+    fn kind(&self) -> String {
         match self {
-            StartError::BackendMissing { .. } => "backend_missing",
-            StartError::NoPythonEnvironment { .. } => "no_python_environment",
-            StartError::SpawnFailed { .. } => "spawn_failed",
-            StartError::PortUnavailable { .. } => "port_unavailable",
-            StartError::NoAnswer { .. } => "no_answer",
-            StartError::Stopped { .. } => "stopped",
-            StartError::RestartExhausted { .. } => "restart_exhausted",
-            StartError::RestartFailed { .. } => "restart_failed",
-            StartError::AdoptedStopped { .. } => "adopted_stopped",
+            StartError::BackendMissing { .. } => "backend_missing".to_string(),
+            StartError::NoPythonEnvironment { .. } => "no_python_environment".to_string(),
+            StartError::SpawnFailed { .. } => "spawn_failed".to_string(),
+            StartError::PortUnavailable { .. } => "port_unavailable".to_string(),
+            StartError::NoAnswer { .. } => "no_answer".to_string(),
+            StartError::Stopped { .. } => "stopped".to_string(),
+            StartError::RestartExhausted { .. } => "restart_exhausted".to_string(),
+            StartError::RestartFailed { .. } => "restart_failed".to_string(),
+            StartError::AdoptedStopped { .. } => "adopted_stopped".to_string(),
+            StartError::EnvironmentPathRelative { .. } => "environment_path_relative".to_string(),
+            StartError::BackendRefused { refusal } => refusal.kind.clone(),
         }
     }
 
@@ -216,6 +266,12 @@ impl StartError {
                 "The service this window attached to on port {port} has stopped ({detail}). \
                  This window did not start it, so it cannot restart it."
             ),
+            StartError::EnvironmentPathRelative { variable, value, .. } => format!(
+                "{variable} is set to {value}, which is a relative path, so it names a \
+                 different place every time the application is started from a different \
+                 folder. Nothing has been started and nothing has been written."
+            ),
+            StartError::BackendRefused { refusal } => refusal.summary.clone(),
         }
     }
 
@@ -250,6 +306,11 @@ impl StartError {
                 "Start the service again on port {port}. This window keeps checking and attaches \
                  to it on its next check, without being closed."
             ),
+            StartError::EnvironmentPathRelative { variable, .. } => format!(
+                "Set {variable} to a full path beginning with a drive letter, or remove it and \
+                 let Job Hunter choose, then start Job Hunter again."
+            ),
+            StartError::BackendRefused { refusal } => refusal.remedy.clone(),
         }
     }
 
@@ -267,7 +328,9 @@ impl StartError {
         match self {
             StartError::BackendMissing { probed }
             | StartError::NoPythonEnvironment { probed }
-            | StartError::PortUnavailable { probed, .. } => probed,
+            | StartError::PortUnavailable { probed, .. }
+            | StartError::EnvironmentPathRelative { probed, .. } => probed,
+            StartError::BackendRefused { refusal } => &refusal.probed,
             _ => &[],
         }
     }
@@ -856,6 +919,91 @@ fn choose_port(start: u16, span: u16) -> Result<PortChoice, StartError> {
     })
 }
 
+/// The two settings that name a place on disk.
+///
+/// Both are read by the backend as well. This shell checks them too because it
+/// writes the log file itself, and because a value it will not use must not
+/// cost a spawned process and a timeout to discover.
+const PATH_SETTINGS: [&str; 2] = ["JOB_HUNTER_DATA_DIR", "JOB_HUNTER_DATABASE_URL"];
+
+/// The prefix a SQLite URL uses for a file on disk.
+const SQLITE_FILE_PREFIX: &str = "sqlite:///";
+
+/// The path a setting names, or `None` when it names no path at all.
+///
+/// A database URL that is in memory or points at a server has nothing the
+/// working directory could move, so there is nothing here to check.
+fn path_named_by(variable: &str, value: &str) -> Option<PathBuf> {
+    if variable != "JOB_HUNTER_DATABASE_URL" {
+        return Some(PathBuf::from(value));
+    }
+    let file = value.strip_prefix(SQLITE_FILE_PREFIX)?;
+    if file.is_empty() || file == ":memory:" {
+        return None;
+    }
+    Some(PathBuf::from(file))
+}
+
+/// Whether one setting, with one value, names a place that moves.
+///
+/// Split from the loop over the environment so the rule can be tested without
+/// setting a process-wide variable that every other test in this file would
+/// then be running under.
+fn relative_setting(variable: &str, value: &str) -> Option<StartError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let path = path_named_by(variable, value)?;
+    if path.is_absolute() {
+        return None;
+    }
+    let resolved = std::env::current_dir()
+        .map(|here| here.join(&path))
+        .unwrap_or_else(|_| path.clone());
+    Some(StartError::EnvironmentPathRelative {
+        variable: variable.to_string(),
+        value: value.to_string(),
+        probed: vec![
+            format!("{variable} = {value}"),
+            format!(
+                "from this working directory it would mean {}",
+                readable(&resolved)
+            ),
+        ],
+    })
+}
+
+/// The first path setting that names a relative place, if either does.
+fn relative_path_setting() -> Option<StartError> {
+    PATH_SETTINGS
+        .into_iter()
+        .filter_map(|variable| {
+            std::env::var(variable)
+                .ok()
+                .and_then(|value| relative_setting(variable, &value))
+        })
+        .next()
+}
+
+/// Refuse a relative path setting before anything is started.
+///
+/// This runs before the port is chosen and long before the backend is
+/// launched, because the whole point is that nothing should be created while
+/// one of these settings names a place that moves. A recorded failure here is
+/// the failure `start()` returns: it does not try and then explain.
+pub fn check_environment(app: &AppHandle) {
+    let Some(error) = relative_path_setting() else {
+        return;
+    };
+    logging::shell(&format!("refusing to start: {}", error.summary()));
+    logging::shell(&format!("remedy: {}", error.remedy()));
+    for note in error.probed() {
+        logging::shell(&format!("  {note}"));
+    }
+    app.state::<BackendState>().set_phase(Phase::Failed(error));
+}
+
 /// Choose the port, before the window exists.
 ///
 /// The renderer is told the address by the window's initialization script, and
@@ -1370,6 +1518,10 @@ fn spawn_child(app: &AppHandle, state: &BackendState, port: u16) -> Result<(), S
         port
     ));
 
+    // A refusal printed by the process that just stopped must not be read as
+    // the diagnosis of this one.
+    logging::clear_refusal();
+
     let mut child = command.spawn().map_err(|error| StartError::SpawnFailed {
         python: readable(&python),
         detail: error.to_string(),
@@ -1384,6 +1536,44 @@ fn spawn_child(app: &AppHandle, state: &BackendState, port: u16) -> Result<(), S
 
     *state.child.lock().unwrap() = Some(child);
     Ok(())
+}
+
+/// What a process that has ended should be reported as.
+///
+/// A backend that refused said so on its way out, and that sentence is the
+/// answer. Waiting a moment for it is deliberate: the line is flushed before
+/// the exit but is read on another thread, so the exit is visible first. Only
+/// when nothing arrives is the exit code itself the whole story.
+fn refusal_or(detail: String) -> StartError {
+    let deadline = Instant::now() + REFUSAL_GRACE;
+    loop {
+        if let Some(payload) = logging::take_refusal() {
+            match serde_json::from_str::<Refusal>(&payload) {
+                Ok(refusal) => {
+                    logging::shell(&format!(
+                        "the backend refused to serve and stopped itself ({detail}); \
+                         it reported: {}",
+                        refusal.summary
+                    ));
+                    return StartError::BackendRefused { refusal };
+                }
+                Err(error) => {
+                    // A marker line this shell cannot read is worth saying so
+                    // about, but it is not worth losing the exit code over.
+                    logging::shell(&format!(
+                        "a backend refusal line could not be read ({error}); \
+                         reporting the exit instead"
+                    ));
+                    break;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    StartError::Stopped { detail }
 }
 
 /// Wait until the spawned backend answers on its port, or until it is clear
@@ -1401,7 +1591,7 @@ fn await_answer(state: &BackendState, port: u16) -> Result<(), StartError> {
         // rest of the timeout would only delay it.
         if let Some(detail) = ended(state) {
             state.kill_child();
-            return Err(StartError::Stopped { detail });
+            return Err(refusal_or(detail));
         }
 
         std::thread::sleep(Duration::from_millis(200));
@@ -1906,5 +2096,100 @@ mod tests {
         assert_eq!(chosen, interpreter);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Requirement 1 of TASK 008. The value that produced the stray `.tmpdata`
+    /// database was a relative one, taken verbatim.
+    #[test]
+    fn a_relative_data_directory_is_refused() {
+        let error = relative_setting("JOB_HUNTER_DATA_DIR", ".tmpdata")
+            .expect("a relative data directory must be refused");
+        assert_eq!(error.kind(), "environment_path_relative");
+        assert!(error.summary().contains("JOB_HUNTER_DATA_DIR"), "{}", error.summary());
+        assert!(
+            error.remedy().contains("full path"),
+            "the remedy says what a good value looks like: {}",
+            error.remedy()
+        );
+        assert_eq!(
+            error.probed().len(),
+            2,
+            "the refusal shows the value and where it would have landed"
+        );
+    }
+
+    /// A database URL carries its path inside the URL, so the check has to look
+    /// through the scheme rather than at the string.
+    #[test]
+    fn a_relative_sqlite_url_is_refused_and_an_absolute_one_is_not() {
+        assert!(
+            relative_setting("JOB_HUNTER_DATABASE_URL", "sqlite:///.tmpdata/job_hunter.db")
+                .is_some(),
+            "a sqlite URL with a relative file must be refused"
+        );
+        assert!(
+            relative_setting(
+                "JOB_HUNTER_DATABASE_URL",
+                "sqlite:///C:/Users/someone/JobHunter/job_hunter.db"
+            )
+            .is_none(),
+            "a sqlite URL naming a full path is fine"
+        );
+    }
+
+    /// Only a path can be relative. An in-memory database and a server URL have
+    /// nothing the working directory could move, and refusing them would be a
+    /// refusal with no defect behind it.
+    #[test]
+    fn a_url_without_a_file_is_not_a_path_setting() {
+        for value in ["sqlite:///:memory:", "sqlite://", "postgresql://host/db"] {
+            assert!(
+                relative_setting("JOB_HUNTER_DATABASE_URL", value).is_none(),
+                "{value} names no file on disk"
+            );
+        }
+        assert!(
+            relative_setting("JOB_HUNTER_DATA_DIR", "   ").is_none(),
+            "an empty value is not a setting"
+        );
+    }
+
+    /// A backend that refuses says why in its own words, and those words are
+    /// what the panel shows. The shell must not summarise them into "the
+    /// process exited".
+    #[test]
+    fn a_refusal_is_carried_through_in_the_backends_own_words() {
+        let payload = r#"{"kind":"migration_failed","summary":"The database could not be brought up to date.","remedy":"Restore the backup.","probed":["revision 0001"]}"#;
+        let refusal: Refusal = serde_json::from_str(payload).expect("the marked line parses");
+        let error = StartError::BackendRefused { refusal };
+        let shown = error.present();
+        assert_eq!(shown.kind, "migration_failed");
+        assert_eq!(shown.summary, "The database could not be brought up to date.");
+        assert_eq!(shown.remedy, "Restore the backup.");
+        assert_eq!(shown.probed, vec!["revision 0001".to_string()]);
+    }
+
+    /// The marked line is the contract between the two halves. `probed` is
+    /// optional on it, because not every refusal has paths to show.
+    #[test]
+    fn a_refusal_without_probed_paths_still_parses() {
+        let refusal: Refusal =
+            serde_json::from_str(r#"{"kind":"k","summary":"s","remedy":"r"}"#).expect("parses");
+        assert!(refusal.probed.is_empty());
+    }
+
+    /// Nothing arrived on the pipe, so the exit code is the whole story. This
+    /// also proves the wait is bounded: a backend that stopped for an ordinary
+    /// reason must not cost the panel a second and a half every time.
+    #[test]
+    fn an_exit_with_no_refusal_is_still_reported_as_a_stop() {
+        logging::clear_refusal();
+        let started = Instant::now();
+        let error = refusal_or("the process exited with code 1".to_string());
+        assert_eq!(error.kind(), "stopped");
+        assert!(
+            started.elapsed() < REFUSAL_GRACE * 2,
+            "the wait for a refusal is bounded"
+        );
     }
 }
