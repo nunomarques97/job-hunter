@@ -4,6 +4,22 @@ Where the work actually is. `docs/BLUEPRINT.md` is the plan and `CLAUDE.md` is
 the standing rules; neither carries progress. This file does, and updating it
 is part of every task's definition of done.
 
+## Progress
+
+How much of the product exists, not how many tasks are closed. The weights are
+the PO's and do not move. A task moves its own block's number and nothing else.
+
+| Block | Tasks | Weight | At |
+|---|---|---:|---:|
+| Runs and does not misreport itself | Phase A | 25 | 25 |
+| Data survives schema change | TASK 008 | 10 | 10 |
+| True and attachable documents | TASK 013–019 | 40 | 0 |
+| Jobs worth applying to | TASK 021–024 | 20 | 5 |
+| Typography and polish | TASK 036 | 5 | 0 |
+| **Total** | | **100** | **40** |
+
+Was 30 before TASK 008.
+
 ## Completed work units
 
 - **TASK 001b — One-time environment setup.** `scripts/setup.ps1` creates
@@ -97,18 +113,44 @@ is part of every task's definition of done.
   rather than the tail of a wrapped one. Evidence:
   `docs/design/screenshots/task-007c-log-header.png`.
 
+- **TASK 008 — Introduce Alembic, and settle the two path settings first.**
+  Two commits, in that order, because a migration run against the wrong file is
+  worse than no migration at all. **`JOB_HUNTER_DATA_DIR` and
+  `JOB_HUNTER_DATABASE_URL` are refused when they name a relative path.** Both
+  halves refuse: the backend raises a typed `StartupRefusal` before the engine
+  is built, so nothing is created on the way to the failure, and prints it on a
+  marked line before exiting with 78; the shell checks the same two settings
+  before the port is chosen and reads that marked line off the pipe it already
+  logs, so the panel shows the backend's own sentence rather than "the process
+  exited with code 78". `StartFailure.kind` became a `String` to carry a
+  refusal's own kind. **`init_db` runs `alembic upgrade head`.** A database with
+  tables and no migration history is stamped at `0001_baseline`, never
+  recreated, and only after the tables that are actually there have been
+  compared against the tables the baseline describes — a difference refuses the
+  stamp and names it, because the stamp is the one step nothing can check
+  afterwards. The baseline is read by running the baseline revision, not the
+  models, so a second revision does not make every pre-Alembic database refuse
+  to open. **A failed migration leaves the database where it was and the backend
+  does not serve.** The whole upgrade is one transaction on an engine built for
+  it; the second revision (`jobs.last_seen_at`, nullable, set by discovery on
+  every pass) applies to a fresh database and to the existing one, and the 172
+  rows that already existed read null. Verified against a copy of
+  `job_hunter-backup-2026-09-12.db` in a scratch directory: 11 tables, 400 rows
+  per table before and after, and a deliberately broken third revision left 400
+  rows, no half-applied column and the version row unchanged. Evidence:
+  `docs/design/screenshots/task-008-relative-path-refused.png`,
+  `docs/design/screenshots/task-008-migration-failed.png`.
+  *Commits: `9ba16ad`, `aa69693`.*
+
 ## Current work unit
 
-None. Phase A is closed.
+None.
 
 ## Next work unit
 
-**TASK 008 — Introduce Alembic.** `init_db` runs `alembic upgrade head`
-instead of `create_all`; an existing database is stamped at the baseline
-revision without data loss. It also owns the `JOB_HUNTER_DATA_DIR` /
-`JOB_HUNTER_DATABASE_URL` resolution below, which must be settled *before* a
-migration ever runs. After that: 013–019 (truthfulness and documents), then
-021–024 (sources).
+**TASK 009–011 — the task queue**, then 013–019 (truthfulness and documents),
+then 021–024 (sources). TASK 012 is the first real use of the migration
+mechanism this task introduced.
 
 ## What Phase A taught us
 
@@ -148,6 +190,20 @@ migration ever runs. After that: 013–019 (truthfulness and documents), then
   switched to the panel, and the first click after `SetForegroundWindow` is
   eaten by activation. Screenshot before clicking, and prove a timed action by
   where it falls between two known clock marks.
+- **A test that only checks the happy path of a rollback proves nothing about
+  the rollback.** The migration failure test was written expecting to pass, and
+  it failed: the deliberately broken revision's column was still there
+  afterwards. pysqlite opens a transaction implicitly before an INSERT, an
+  UPDATE and a DELETE and deliberately *not* before a CREATE or an ALTER, so
+  every schema change was running outside any transaction. Without that test the
+  product would have shipped a migration mechanism that leaves a half-migrated
+  database behind and a sentence on the panel claiming it does not.
+- **A schema comparison has to name the revision it is comparing against.**
+  The first version of the stamp check compared an installed database against
+  the *models*. It passed, because at that moment the two were identical — and
+  it would have started refusing every pre-Alembic database on the day the
+  second revision was written, which was forty minutes later. The baseline is
+  now read by running the baseline revision against a throwaway database.
 - **Verification evidence that is not committed is verification that did not
   happen.** TASK 005's three screenshots were rendered inside a session and
   lost when it ended; TASK 005b had to re-run every state from scratch to get
@@ -159,8 +215,9 @@ migration ever runs. After that: 013–019 (truthfulness and documents), then
 
 | Item | Owner |
 |---|---|
-| `JOB_HUNTER_DATA_DIR` and `JOB_HUNTER_DATABASE_URL` are used verbatim, so a relative value resolves against the working directory. This is how the `.tmpdata` database came to exist. Resolve both to absolute paths at startup and reject a relative value, before any migration ever runs. | TASK 008 |
-| **The pre-migration copy of the live database to verify TASK 008 against.** `C:\Users\User\AppData\Local\JobHunter\job_hunter-backup-2026-09-12.db`, taken 2026-09-12 through SQLite's backup API rather than a file copy, because the live database had a 4 MB write-ahead log that a plain `copy` would have left behind. 11 tables, 400 rows: jobs 172, job_scores 153, activity_logs 41, documents 24, applications 4, email_templates 3, candidates 2, automation_config 1, automation_runs 0, email_accounts 0, email_messages 0. | TASK 008 |
+| **A backend from an earlier session is still listening on port 8756 and cannot be stopped from a normal session.** It answers `/api/health` as ours and serves the live database, so any launch of the window adopts it instead of starting its own. Its process id, 34524, is invisible to `Get-Process`, `Get-CimInstance` and `tasklist` and `taskkill` cannot find it, which means it belongs to a session this one cannot see. TASK 008's broken-migration capture had to be taken on port 8757 to get around it. One step to clear it: **restart the machine**, or find and close the terminal that ran `npm run backend`. Until then the live database has a writer nobody is supervising. | Sponsor |
+| **The panel says a restart is available after a backend that refused on purpose.** Visible in `task-008-migration-failed.png`: the Supervision row reads "one automatic restart is available, once, for this window" under a failure that a restart cannot fix, because the refusal happened inside `start()` and the supervisor never ran. The row describes the budget rather than promising to spend it, but under a refusal it reads as a recovery that is coming. Same family as the adopted-stopped remedy TASK 007 had to reword. | PO |
+| **The pre-migration copy of the live database.** `C:\Users\User\AppData\Local\JobHunter\job_hunter-backup-2026-09-12.db`, taken 2026-09-12 through SQLite's backup API rather than a file copy, because the live database had a 4 MB write-ahead log that a plain `copy` would have left behind. 11 tables, 400 rows: jobs 172, job_scores 153, activity_logs 41, documents 24, applications 4, email_templates 3, candidates 2, automation_config 1, automation_runs 0, email_accounts 0, email_messages 0. TASK 008 verified against a copy of it and it is still untouched; keep it until the live database has been opened by the migrated code at least once. | Sponsor |
 | **A two-pixel sliver of the row above still shows at the top of the log box.** TASK 007c fixed the defect that mattered — the top row is now the start of a whole entry with its timestamp, not the tail of a wrapped one — but the fold lands about two pixels inside the row above, so the bottom of its descenders shows under the border. Measuring with `getBoundingClientRect` for sub-pixel precision was tried, made it worse by putting the orphaned tail back, and was reverted. Cosmetic. | unassigned |
 | **The Sponsor's name is in the pushed tree, in four places, and none of it is contact data.** `backend/tests/smoke_workflow.py` and `backend/tests/test_units.py` use it with the fabricated `nuno@example.com` and `+351 912 000 000` as CV-parser fixtures, `src-tauri/Cargo.toml` carries it as `authors`, and both blueprint copies use it in an example output filename. The repository is private, so nothing is exposed, but invariant 7 says nothing about the Sponsor belongs in code. Whether to neutralise the fixtures is a product decision, not a defect fix. | PO |
 | **Invariant 4 is breached on the Dashboard, and the arithmetic underneath it is wrong in a way the screenshot does not show.** Two findings, together because they are the same twenty lines of code. (a) *Confirmed in code.* `services/analytics.py` computes `low_confidence` on every rate and returns the numerator and denominator with it; `AnalyticsView.tsx:274` honours it. `DashboardView.tsx:142-156` does not — the Interviews and Offers tiles render `${percent(value)} of sent` and drop `low_confidence`, the numerator and the denominator. The live database has three submitted applications, so "33.3% of sent" is shown unlabelled over a denominator of 3 where `CLAUDE.md` rule 4 requires `low_confidence` under five. (b) *Checked against the code, and the suspicion in the brief was wrong about the mechanism.* The denominator is **not** weekly: `applications_submitted` and the rates are all-time, and `applications_submitted_this_week` is only the delta chip. The real defect is that numerator and denominator use two different definitions of the same thing — the numerator is a **current stage** count (`stage == INTERVIEW`) while the denominator is a **lifetime event** count (`submitted_at is not null`). So an application that moves from Interview to Offer silently leaves the interview numerator, and the pipeline's four non-archived rows against the tile's three submitted show at least one row sitting in a post-submission stage with no `submitted_at`. Fix both together; the second is not visible from any screenshot. | TASK 029 |

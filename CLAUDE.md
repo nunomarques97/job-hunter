@@ -80,6 +80,13 @@ personal tool and one that can be handed to someone else later:
 
 - SQLite, not PostgreSQL — no `ARRAY` columns; list and dict fields use
   `JSON`.
+- **A schema change is a revision, never a model edit on its own.** `init_db`
+  runs `alembic upgrade head`; `create_all` is gone. Write the revision with
+  `backend\.venv\Scripts\alembic.exe revision --autogenerate`, from
+  `backend/`, with `JOB_HUNTER_DATA_DIR` pointing somewhere disposable and
+  `alembic.ini`'s scratch database already at head. The unit tests compare the
+  models against the migrations on every run, so a model changed without a
+  revision fails the suite rather than the next person's database.
 - Data lives outside the repository, under `%LOCALAPPDATA%\JobHunter`,
   because a packaged app cannot write next to its executable.
 - The renderer's API base differs by build: the dev server proxies `/api`;
@@ -101,7 +108,12 @@ personal tool and one that can be handed to someone else later:
 
 - `npm run test:backend` — unit tests, no network, no model, no server.
 - `npm run typecheck` — tsc over the renderer.
-- `npm run test:smoke` — end-to-end checks against a running API.
+- `npm run test:smoke` — end-to-end checks against a running API. It writes a
+  profile and prepares a package, so point it at a backend started with a
+  scratch `JOB_HUNTER_DATA_DIR`, never at the live database. One check,
+  "regeneration kept the previous version", needs a document that already has a
+  history and so fails on the first run against a new database and passes on
+  the second.
 - `cargo check` — from the vcvars64 environment above.
 
 Every change should leave all four green. A green suite is evidence for what
