@@ -606,6 +606,7 @@ function LogCard({
   status: BackendStatus | null;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
+  const grid = useRef<HTMLDivElement>(null);
   const zone = useMemo(zoneLabel, []);
   // Keyed off adoption rather than off `logs_captured`, which is also false
   // before anything has started. A backend that never launched is not a
@@ -613,8 +614,32 @@ function LogCard({
   // on the one screen that must not have any.
   const adopted = status?.provenance === 'adopted';
 
+  // Scrolled to the bottom, and then to a row boundary. A whole number of
+  // 20px lines stops a line being cut in half, but not a line that wraps: the
+  // top of the box would land on the second visual line of a two-line entry,
+  // showing its tail with the timestamp above the fold and no way to tell.
+  // Measuring where the rows actually start and padding the bottom by the
+  // shortfall moves the fold onto the start of a whole entry.
   useEffect(() => {
-    bottom.current?.scrollTo({ top: bottom.current.scrollHeight });
+    const box = bottom.current;
+    const rows = grid.current;
+    if (!box) return;
+    // Measured without the previous nudge in place, so the correction is
+    // computed from the real geometry rather than from itself.
+    if (rows) rows.style.paddingBottom = '0px';
+    box.scrollTo({ top: box.scrollHeight });
+    const starts = Array.from(box.querySelectorAll<HTMLElement>('[data-logrow]')).map(
+      (cell) => cell.offsetTop,
+    );
+    const top = box.scrollTop;
+    const next = starts.find((start) => start > top);
+    // A fold that already sits on a row start needs nothing. One that does not
+    // is inside a wrapped entry, and the box is padded until the next whole
+    // entry can reach the top edge.
+    if (rows && next !== undefined && !starts.includes(top)) {
+      rows.style.paddingBottom = `${next - top}px`;
+    }
+    box.scrollTo({ top: box.scrollHeight });
   }, [lines]);
 
   // Which of these lines this launch actually wrote. The file is a day long
@@ -654,19 +679,17 @@ function LogCard({
         title="Service log"
         icon="history"
         subtitle={`The end of today's file. Times converted to this machine's clock (${zone}); the file itself is in UTC.`}
-        action={
-          path ? (
-            <span
-              className="t-caption mono muted truncate"
-              title={path}
-              style={{ maxWidth: 420 }}
-            >
-              {path}
-            </span>
-          ) : undefined
-        }
       />
       <div className="card-body col" style={{ gap: 12 }}>
+        {/* The path used to sit beside the subtitle, which at the standard
+            window width cut the sentence off at "the file itself is in …" —
+            losing UTC, the only word in it that carries information. On its
+            own row both survive at any width. */}
+        {path && (
+          <span className="t-caption mono muted truncate" title={path}>
+            {path}
+          </span>
+        )}
         {adopted && (
           <Notice tone="warn">
             <div className="t-small">This service's output is not being captured.</div>
@@ -709,6 +732,7 @@ function LogCard({
             // lines — which is what keeps the first line from being cut in
             // half by the top border.
             <div
+              ref={grid}
               style={{
                 display: 'grid',
                 gridTemplateColumns: 'auto minmax(0, 1fr)',
@@ -727,6 +751,7 @@ function LogCard({
                     </span>
                   )}
                   <span
+                    data-logrow=""
                     className="t-caption mono muted"
                     style={{ whiteSpace: 'nowrap', width: 92, lineHeight: '20px' }}
                     title={row.utc ? `${row.utc} in the file` : undefined}

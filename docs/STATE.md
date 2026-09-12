@@ -77,6 +77,25 @@ is part of every task's definition of done.
   not a restart and spends none of the one-restart budget; "Check again" now
   drives it through a new `backend_recheck` command rather than only redrawing.
   *Commit: `8c0a814`.*
+- **TASK 007c — The work exists in a second place, and the log header stops
+  truncating.** Nineteen commits and the ten screenshots that are this
+  project's only verification record lived on one disk with no remote. There
+  is now a **private** GitHub repository at
+  `https://github.com/nunomarques97/job-hunter`, `origin` on `master`,
+  verified by query rather than by the push message: the remote reports the
+  same HEAD as the local branch, `isPrivate` is true, and the pushed tree
+  carries all ten PNGs under `docs/design/screenshots/`. Nothing personal left
+  the machine. **The live database has a dated copy** beside it, taken before
+  TASK 008 touches anything: `job_hunter-backup-2026-09-12.db`, 11 tables and
+  400 rows, counts equal to the live database table by table. **The Service
+  log header stops truncating.** The log path used to sit beside the subtitle
+  and cut it at "the file itself is in ...", losing UTC, the one word in the
+  sentence that carries information; the path now has its own row and both
+  survive at 1440. **A wrapped first log line no longer appears without its
+  timestamp.** The box is scrolled to the bottom and then padded to the
+  nearest row start, so the top of the box is the beginning of a whole entry
+  rather than the tail of a wrapped one. Evidence:
+  `docs/design/screenshots/task-007c-log-header.png`.
 
 ## Current work unit
 
@@ -141,6 +160,9 @@ migration ever runs. After that: 013–019 (truthfulness and documents), then
 | Item | Owner |
 |---|---|
 | `JOB_HUNTER_DATA_DIR` and `JOB_HUNTER_DATABASE_URL` are used verbatim, so a relative value resolves against the working directory. This is how the `.tmpdata` database came to exist. Resolve both to absolute paths at startup and reject a relative value, before any migration ever runs. | TASK 008 |
+| **The pre-migration copy of the live database to verify TASK 008 against.** `C:\Users\User\AppData\Local\JobHunter\job_hunter-backup-2026-09-12.db`, taken 2026-09-12 through SQLite's backup API rather than a file copy, because the live database had a 4 MB write-ahead log that a plain `copy` would have left behind. 11 tables, 400 rows: jobs 172, job_scores 153, activity_logs 41, documents 24, applications 4, email_templates 3, candidates 2, automation_config 1, automation_runs 0, email_accounts 0, email_messages 0. | TASK 008 |
+| **A two-pixel sliver of the row above still shows at the top of the log box.** TASK 007c fixed the defect that mattered — the top row is now the start of a whole entry with its timestamp, not the tail of a wrapped one — but the fold lands about two pixels inside the row above, so the bottom of its descenders shows under the border. Measuring with `getBoundingClientRect` for sub-pixel precision was tried, made it worse by putting the orphaned tail back, and was reverted. Cosmetic. | unassigned |
+| **The Sponsor's name is in the pushed tree, in four places, and none of it is contact data.** `backend/tests/smoke_workflow.py` and `backend/tests/test_units.py` use it with the fabricated `nuno@example.com` and `+351 912 000 000` as CV-parser fixtures, `src-tauri/Cargo.toml` carries it as `authors`, and both blueprint copies use it in an example output filename. The repository is private, so nothing is exposed, but invariant 7 says nothing about the Sponsor belongs in code. Whether to neutralise the fixtures is a product decision, not a defect fix. | PO |
 | **Invariant 4 is breached on the Dashboard, and the arithmetic underneath it is wrong in a way the screenshot does not show.** Two findings, together because they are the same twenty lines of code. (a) *Confirmed in code.* `services/analytics.py` computes `low_confidence` on every rate and returns the numerator and denominator with it; `AnalyticsView.tsx:274` honours it. `DashboardView.tsx:142-156` does not — the Interviews and Offers tiles render `${percent(value)} of sent` and drop `low_confidence`, the numerator and the denominator. The live database has three submitted applications, so "33.3% of sent" is shown unlabelled over a denominator of 3 where `CLAUDE.md` rule 4 requires `low_confidence` under five. (b) *Checked against the code, and the suspicion in the brief was wrong about the mechanism.* The denominator is **not** weekly: `applications_submitted` and the rates are all-time, and `applications_submitted_this_week` is only the delta chip. The real defect is that numerator and denominator use two different definitions of the same thing — the numerator is a **current stage** count (`stage == INTERVIEW`) while the denominator is a **lifetime event** count (`submitted_at is not null`). So an application that moves from Interview to Offer silently leaves the interview numerator, and the pipeline's four non-archived rows against the tile's three submitted show at least one row sitting in a post-submission stage with no `submitted_at`. Fix both together; the second is not visible from any screenshot. | TASK 029 |
 | **Two named normalisation failures, both visible on the Dashboard's recent matches.** (a) A repeated location token: *Engineer Estimator*, Crystalia Glass LLC, renders as "Bishkek, Bishkek, Bishkek …" — city, region and country are the same word and are concatenated rather than collapsed. (b) Two spellings of one value are not reconciled: *Software Engineer III Mobile*, Stone, renders "Remoto" while *DESARROLLADOR FULL STACK*, Kruger NearShore LLC, renders "Remote". Both are real rows in the live database, so they are test inputs, not hypotheticals. | TASK 023 |
 | The live database holds **2 candidate rows** where a single-profile product allows exactly one. TASK 013 must resolve the duplicate and add a constraint enforcing one: every generated document is rendered from profile fields, so an arbitrary pick between two rows is a truthfulness defect, not a tidiness one. | TASK 013 |
