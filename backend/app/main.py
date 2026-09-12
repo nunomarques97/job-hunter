@@ -45,7 +45,24 @@ async def lifespan(app: FastAPI):
     logger.info(
         "starting %s %s on %s:%s", settings.app_name, settings.version, settings.host, settings.port
     )
-    init_db()
+    # A database that could not be brought up to date is not served.
+    #
+    # The alternative — start anyway and let each screen fail on its own — is
+    # invariant 4 broken in the worst place: the window would look complete
+    # while the tables underneath it were the wrong shape. The refusal is
+    # logged, printed on the marked line the desktop shell reads, and the
+    # process stops before a single request is answered. uvicorn turns a failed
+    # lifespan into an exit without ever serving, which is the behaviour this
+    # relies on: the port is never opened, so the shell reports a backend that
+    # refused rather than one that is running badly.
+    try:
+        init_db()
+    except StartupRefusal as refusal:
+        logger.error("%s %s", refusal.summary, refusal.remedy)
+        for line in refusal.probed:
+            logger.error("  %s", line)
+        report(refusal)
+        raise SystemExit(EXIT_REFUSED) from None
     logger.info("database ready at %s", settings.data_dir)
     yield
     logger.info("shutting down")

@@ -129,7 +129,10 @@ def main() -> None:
         "backend apart from any other program holding the port",
     )
     check("database healthy", health["database"]["status"] == "healthy", str(health["database"]))
-    check("11 tables present", health["database"].get("tables") == 11, str(health["database"].get("tables")))
+    # Eleven product tables plus alembic_version, which TASK 008 added and which
+    # is as much a part of a healthy database as any of the others: without it
+    # the next release cannot tell what shape this database is in.
+    check("12 tables present", health["database"].get("tables") == 12, str(health["database"].get("tables")))
     print(f"  info  model: {health['llm']['model']} ({health['llm']['status']})")
 
     print("\nProfile")

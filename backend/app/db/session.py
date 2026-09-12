@@ -8,7 +8,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..core.config import get_settings
-from .base import Base
+from .base import Base  # noqa: F401  (re-exported through app.db)
 
 _settings = get_settings()
 
@@ -39,10 +39,21 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 
 def init_db() -> None:
-    """Create every table. Importing the models module registers them on ``Base``."""
-    from .. import models  # noqa: F401  (import for the side effect of registration)
+    """Bring the database up to the schema this code expects.
 
-    Base.metadata.create_all(bind=engine)
+    This used to be ``Base.metadata.create_all``, which can only add a table
+    that is missing: the first changed column would have meant choosing between
+    losing an installed database and reading the wrong shape out of it. The
+    work is in :mod:`app.db.schema`, including what happens to a database that
+    was written before migrations existed here.
+
+    A failure raises :class:`StartupRefusal` and the application does not
+    serve. Invariant 4: a half-migrated database is degraded, and every screen
+    above it would look complete.
+    """
+    from .schema import upgrade_to_head
+
+    upgrade_to_head(engine)
 
 
 def get_db() -> Iterator[Session]:

@@ -51,6 +51,13 @@ class Job(TimestampedBase):
 
     posted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    #: The last time a source still listed this posting.
+    #:
+    #: Nullable, and null on every row that was stored before this column
+    #: existed. That is the honest answer for them: nothing ever checked, so
+    #: nothing can be said about when the posting was last seen. A row that has
+    #: never been re-discovered is not the same as a row known to be gone.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     #: Stable identity across sources, used for deduplication.

@@ -31,6 +31,7 @@ os.environ["JOB_HUNTER_OLLAMA_MODEL_COVER_LETTER"] = "pinned-model:30b"
 from app.core.config import resolve_data_dir, resolve_database_url  # noqa: E402
 from app.core.logging import MASK, Redactor, redact_text  # noqa: E402
 from app.core.startup import MARKER, StartupRefusal  # noqa: E402
+from app.db import schema as db_schema  # noqa: E402
 from app.core.startup import report as report_refusal  # noqa: E402
 from app.db.base import utcnow  # noqa: E402
 from app.models.candidate import Candidate  # noqa: E402
@@ -614,6 +615,276 @@ check(
     any("What to do: r" == line for line in _lines),
     str(_lines),
 )
+
+
+# -- the schema can change without destroying a database that has data in it ---
+#
+# TASK 008. create_all could only ever add a table that was missing, so the
+# first changed column meant choosing between losing an installed database and
+# reading the wrong shape out of it. These are the tests that catch a
+# regression: everything else about migrations looks fine right up to the point
+# where somebody's data is gone.
+
+import sqlite3  # noqa: E402
+import textwrap  # noqa: E402
+
+from sqlalchemy import create_engine  # noqa: E402
+
+from app.db.base import Base as _Base  # noqa: E402
+from app import models as _models  # noqa: E402,F401
+
+_MIGRATION_DIR = Path(tempfile.mkdtemp(prefix="job-hunter-migrations-"))
+
+
+def sqlite_engine(path: Path):
+    return create_engine(f"sqlite:///{path.as_posix()}", future=True)
+
+
+def sqlite_rows(path: Path, sql: str):
+    connection = sqlite3.connect(str(path))
+    try:
+        return connection.execute(sql).fetchall()
+    finally:
+        connection.close()
+
+
+def sqlite_run(path: Path, statements: list[str]) -> None:
+    connection = sqlite3.connect(str(path))
+    try:
+        for statement in statements:
+            connection.execute(statement)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def shape_of(path: Path) -> dict:
+    """Tables, columns and indexes, without caring where a column sits.
+
+    ADD COLUMN puts a new column at the end of an existing table while
+    create_all puts it where the model declares it. The two differ in the text
+    of CREATE TABLE and in nothing else, and SQLite addresses columns by name.
+    """
+    tables = sorted(
+        row[0]
+        for row in sqlite_rows(path, "select name from sqlite_master where type='table'")
+        if not row[0].startswith("sqlite_") and row[0] != db_schema.VERSION_TABLE
+    )
+    return {
+        "tables": tables,
+        "columns": {
+            table: sorted(
+                (row[1], row[2], row[3], row[5])
+                for row in sqlite_rows(path, f"pragma table_info({table})")
+            )
+            for table in tables
+        },
+        "indexes": sorted(
+            (row[0], row[1] or "")
+            for row in sqlite_rows(
+                path,
+                "select name, sql from sqlite_master where type='index' "
+                "and name not like 'sqlite_%'",
+            )
+        ),
+    }
+
+
+# A database shaped the way every installed one was before Alembic existed
+# here: the tables are all present and there is no migration history at all.
+_pre_alembic = _DATA_DIR / "pre-alembic.db"
+db_schema.upgrade_to_head(sqlite_engine(_pre_alembic))
+sqlite_run(_pre_alembic, [f"drop table {db_schema.VERSION_TABLE}", "alter table jobs drop column last_seen_at"])
+sqlite_run(
+    _pre_alembic,
+    [
+        "insert into jobs (source, source_job_id, canonical_url, application_url, "
+        "application_method, title, company, company_domain, company_logo_url, location, "
+        "city, country, remote_type, employment_type, seniority, salary_currency, "
+        "salary_period, description, requirements, responsibilities, technologies, "
+        "benefits, discovered_at, content_hash, stage, is_saved, is_excluded, "
+        "exclusion_reason, raw_payload, created_at, updated_at) values "
+        "('sample', 'kept-1', '', '', 'external', 'Platform Engineer', 'Acme', '', '', "
+        "'Lisbon', 'Lisbon', 'Portugal', 'remote', 'full_time', 'mid', 'EUR', 'year', "
+        "'', '', '', '[]', '[]', '2026-01-01 00:00:00', 'hash-1', 'discovered', 0, 0, "
+        "'', '{}', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        "insert into email_templates (name, category, subject, body, variables, "
+        "is_builtin, created_at, updated_at) values ('Follow up', 'follow_up', 'Hello', "
+        "'Body', '[]', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+    ],
+)
+
+check(
+    "a pre-Alembic database has no migration history to start with",
+    db_schema.current_revision(sqlite_engine(_pre_alembic)) is None,
+)
+check(
+    "a pre-Alembic database matches the baseline exactly",
+    db_schema.describe_difference(sqlite_engine(_pre_alembic)) == [],
+    str(db_schema.describe_difference(sqlite_engine(_pre_alembic))),
+)
+
+_rows_before = {
+    table: sqlite_rows(_pre_alembic, f"select count(*) from {table}")[0][0]
+    for table in ("jobs", "email_templates")
+}
+db_schema.upgrade_to_head(sqlite_engine(_pre_alembic))
+_rows_after = {
+    table: sqlite_rows(_pre_alembic, f"select count(*) from {table}")[0][0]
+    for table in ("jobs", "email_templates")
+}
+
+check("upgrading a pre-Alembic database keeps every row", _rows_before == _rows_after, str(_rows_after))
+check(
+    "upgrading a pre-Alembic database keeps the values, not just the count",
+    sqlite_rows(_pre_alembic, "select title, company from jobs")[0] == ("Platform Engineer", "Acme"),
+)
+check(
+    "a stamped database is left at the newest revision",
+    db_schema.current_revision(sqlite_engine(_pre_alembic)) is not None,
+)
+check(
+    "the second revision reached the rows that were already there",
+    sqlite_rows(_pre_alembic, "select count(*) from jobs where last_seen_at is null")[0][0] == 1,
+)
+
+# A database created from nothing has to land in the same place, or the product
+# behaves differently depending on when it was installed.
+_from_nothing = _DATA_DIR / "from-nothing.db"
+db_schema.upgrade_to_head(sqlite_engine(_from_nothing))
+check(
+    "a database created from nothing reaches the same schema as an upgraded one",
+    shape_of(_from_nothing) == shape_of(_pre_alembic),
+)
+check(
+    "both databases are at the same revision",
+    db_schema.current_revision(sqlite_engine(_from_nothing))
+    == db_schema.current_revision(sqlite_engine(_pre_alembic)),
+)
+
+# The models and the migrations are two descriptions of one schema. Nothing
+# forces them to agree, so this is the only thing that notices when a model
+# changes and no revision is written for it.
+_modelled = _DATA_DIR / "modelled.db"
+_Base.metadata.create_all(bind=sqlite_engine(_modelled))
+check(
+    "the models and the migrations describe the same schema",
+    shape_of(_modelled) == shape_of(_from_nothing),
+)
+
+# A database that is not at the baseline must not be told that it is. The stamp
+# writes no tables and checks nothing afterwards, so it is the one step that
+# cannot be taken back.
+_stranger = _DATA_DIR / "stranger.db"
+sqlite_run(_stranger, ["create table something_else (id integer primary key)"])
+_refused = None
+try:
+    db_schema.upgrade_to_head(sqlite_engine(_stranger))
+except StartupRefusal as refused:
+    _refused = refused
+check("a database the baseline does not describe is refused", _refused is not None)
+if _refused is not None:
+    check("the refusal is typed", _refused.kind == "schema_unrecognised", _refused.kind)
+    check(
+        "the refusal names what it did not recognise",
+        any("something_else" in line for line in _refused.probed),
+        str(_refused.probed),
+    )
+check(
+    "nothing was stamped on the way to refusing",
+    db_schema.current_revision(sqlite_engine(_stranger)) is None,
+)
+
+
+def write_migration_tree(directory: Path, revisions: list[tuple[str, str, str]]) -> None:
+    """A throwaway Alembic tree, so a deliberately broken revision can be run."""
+    versions = directory / "versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    (directory / "env.py").write_text(
+        textwrap.dedent(
+            """
+            from alembic import context
+
+            connection = context.config.attributes["connection"]
+            context.configure(connection=connection, render_as_batch=True)
+            with context.begin_transaction():
+                context.run_migrations()
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    for revision, down, body in revisions:
+        source = [
+            "from alembic import op",
+            "",
+            f"revision = {revision!r}",
+            f"down_revision = {down!r}",
+            "branch_labels = None",
+            "depends_on = None",
+            "",
+            "",
+            "def upgrade():",
+        ]
+        source += ["    " + line for line in body.strip().splitlines()]
+        source += ["", "", "def downgrade():", "    pass", ""]
+        (versions / f"{revision}.py").write_text("\n".join(source), encoding="utf-8")
+
+
+# A migration that fails must leave the database exactly where it was. The
+# alternative is a half-migrated database that every screen above it reports as
+# healthy, which is invariant 4 broken in the worst possible place.
+_real_migrations = db_schema.MIGRATIONS_DIR
+_broken_db = _DATA_DIR / "broken-migration.db"
+try:
+    db_schema.MIGRATIONS_DIR = _MIGRATION_DIR
+    write_migration_tree(
+        _MIGRATION_DIR,
+        [("0001_first", None, "op.execute('create table keepsake (id integer primary key, note text)')")],
+    )
+    db_schema.upgrade_to_head(sqlite_engine(_broken_db))
+    sqlite_run(_broken_db, ["insert into keepsake (note) values ('do not lose me')"])
+
+    write_migration_tree(
+        _MIGRATION_DIR,
+        [
+            ("0001_first", None, "op.execute('create table keepsake (id integer primary key, note text)')"),
+            (
+                "0002_broken",
+                "0001_first",
+                "op.execute('alter table keepsake add column added text')\n"
+                "raise RuntimeError('this revision is deliberately broken')",
+            ),
+        ],
+    )
+    _failed = None
+    try:
+        db_schema.upgrade_to_head(sqlite_engine(_broken_db))
+    except StartupRefusal as failed:
+        _failed = failed
+
+    check("a failed migration is a typed refusal", _failed is not None)
+    if _failed is not None:
+        check("the failure is typed as a migration failure", _failed.kind == "migration_failed", _failed.kind)
+        check(
+            "the failure says what went wrong",
+            any("deliberately broken" in line for line in _failed.probed),
+            str(_failed.probed),
+        )
+    check(
+        "a failed migration leaves the database at the revision it was already at",
+        db_schema.current_revision(sqlite_engine(_broken_db)) == "0001_first",
+        str(db_schema.current_revision(sqlite_engine(_broken_db))),
+    )
+    check(
+        "a failed migration leaves no half-applied change behind",
+        "added" not in {row[1] for row in sqlite_rows(_broken_db, "pragma table_info(keepsake)")},
+    )
+    check(
+        "a failed migration loses no rows",
+        sqlite_rows(_broken_db, "select note from keepsake") == [("do not lose me",)],
+    )
+finally:
+    db_schema.MIGRATIONS_DIR = _real_migrations
 
 
 print(f"\n{'=' * 60}")

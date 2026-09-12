@@ -3,6 +3,11 @@
 fastapi==0.141.1
 uvicorn==0.32.0
 sqlalchemy==2.0.52
+# Schema migrations. Added by TASK 008: create_all can only add a table that is
+# missing, so without this the first changed column means losing an installed
+# database. It pulls in Mako and MarkupSafe, which it uses to write new
+# revisions.
+alembic==1.16.5
 pydantic==2.13.5
 httpx==0.27.2
 python-multipart==0.0.19

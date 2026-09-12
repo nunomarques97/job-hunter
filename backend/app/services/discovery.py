@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
+from ..db.base import utcnow
 from ..models.activity import ActivityLog
 from ..models.job import Job
 from ..sources import DiscoveryQuery, discover_all
@@ -74,6 +75,9 @@ def _apply_to_model(job: Job, raw: RawJob) -> None:
     job.posted_at = raw.posted_at
     job.raw_payload = raw.raw_payload
     job.content_hash = raw.identity_hash()
+    # Set on every pass, new row or existing one: this is the moment the source
+    # was asked and still had the posting.
+    job.last_seen_at = utcnow()
 
 
 def persist(db: Session, raws: list[RawJob], source: str) -> SourceOutcome:
