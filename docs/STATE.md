@@ -14,11 +14,15 @@ the PO's and do not move. A task moves its own block's number and nothing else.
 | Runs and does not misreport itself | Phase A | 25 | 25 |
 | Data survives schema change | TASK 008 | 10 | 10 |
 | True and attachable documents | TASK 013–019 | 40 | 0 |
-| Jobs worth applying to | TASK 021–024 | 20 | 5 |
+| Jobs worth applying to | TASK 021–024 | 20 | 7 |
 | Typography and polish | TASK 036 | 5 | 0 |
-| **Total** | | **100** | **40** |
+| **Total** | | **100** | **42** |
 
-Was 30 before TASK 008.
+Was 30 before TASK 008, 40 after it. TASK 021a moved "Jobs worth applying to"
+from 5 to 7: it establishes that the inventory exists and which routes reach it,
+which is the thing the block was most at risk of, but it ships no discovery code
+and the number should not move further until TASK 022 does. The PO owns the
+weights and may want a different figure for a research step.
 
 ## Completed work units
 
@@ -142,6 +146,23 @@ Was 30 before TASK 008.
   `docs/design/screenshots/task-008-migration-failed.png`.
   *Commits: `9ba16ad`, `aa69693`.*
 
+- **TASK 021a — What the sources actually return, and on what basis.** A
+  research task, no product code. `docs/SOURCES.md` now records every source
+  this product may read, measured on 12 September 2026 from this machine, with
+  each publisher's conditions quoted rather than paraphrased. **The ≥30 bar
+  holds: 97 reachable postings on the strict definition, 146 on the broad one.**
+  It holds because of one source — 85 of the 97 are Jooble's, 11 Adzuna's, 1
+  HackerNews's, and the rest of the keyless tier contributes nothing. Four
+  blueprint claims were corrected: Adzuna has no `pt` endpoint, Remotive's free
+  board is 16 postings, EURES publishes no third-party API and is out pending a
+  Sponsor decision with no request made to it, and OD-2's deferral now rests on
+  Jooble rather than on an endpoint that does not exist. Two findings change
+  later tasks: Jooble honours `ResultOnPage: 100`, so one request returns a
+  hundred postings and a weekly sweep fits inside its 500-request lifetime
+  budget, and 18 of every 100 Portuguese postings originate on ATS boards the
+  product can already read keylessly. Six of ten allowed Jooble requests were
+  spent. *Commits: `40e4c0e`, `9aff4d3`.*
+
 ## Current work unit
 
 None.
@@ -150,7 +171,8 @@ None.
 
 **TASK 009–011 — the task queue**, then 013–019 (truthfulness and documents),
 then 021–024 (sources). TASK 012 is the first real use of the migration
-mechanism this task introduced.
+mechanism TASK 008 introduced. TASK 022 now has its source list settled and its
+acceptance number measured in advance.
 
 ## What Phase A taught us
 
@@ -204,6 +226,25 @@ mechanism this task introduced.
   it would have started refusing every pre-Alembic database on the day the
   second revision was written, which was forty minutes later. The baseline is
   now read by running the baseline revision against a throwaway database.
+- **A filter that reads a whole job description will match anything.** Three
+  separate measurements in TASK 021a came out wrong the first time for the same
+  reason: a Go job counted as Angular work because the word appeared once in an
+  agency's list of other openings, and a Berlin office counted as remote-Europe
+  because its description used "remote" about the team and "European" about the
+  customers. Signals about the role and about where the work happens are read
+  from the title and the location field, and from the opening of the body at
+  most. This is the same rule TASK 023 needs for the salary regex, arrived at
+  from a different direction.
+- **A number that looks like inventory usually is not.** Jooble reports
+  `totalCount` 1,061 for "angular" in Portugal. Page one is twenty Angular
+  roles; page five is mostly Java, Python and security roles that mention the
+  word somewhere. Sampling at depth is what separated the two, and it cost one
+  request.
+- **Read the convention before counting the data.** The first HackerNews
+  measurement returned 216 postings that were not postings: querying comments
+  for a technology term finds the "Who wants to be hired" half of the thread —
+  people offering themselves. The product's own source module already gets this
+  right, and the harness written to measure it did not.
 - **Verification evidence that is not committed is verification that did not
   happen.** TASK 005's three screenshots were rendered inside a session and
   lost when it ended; TASK 005b had to re-run every state from scratch to get
@@ -217,6 +258,10 @@ mechanism this task introduced.
 |---|---|
 | **A backend from an earlier session is still listening on port 8756 and cannot be stopped from a normal session.** It answers `/api/health` as ours and serves the live database, so any launch of the window adopts it instead of starting its own. Its process id, 34524, is invisible to `Get-Process`, `Get-CimInstance` and `tasklist` and `taskkill` cannot find it, which means it belongs to a session this one cannot see. TASK 008's broken-migration capture had to be taken on port 8757 to get around it. One step to clear it: **restart the machine**, or find and close the terminal that ran `npm run backend`. Until then the live database has a writer nobody is supervising. | Sponsor |
 | **The panel says a restart is available after a backend that refused on purpose.** Visible in `task-008-migration-failed.png`: the Supervision row reads "one automatic restart is available, once, for this window" under a failure that a restart cannot fix, because the refusal happened inside `start()` and the supervisor never ran. The row describes the budget rather than promising to spend it, but under a refusal it reads as a recovery that is coming. Same family as the adopted-stopped remedy TASK 007 had to reword. | PO |
+| **Jooble's stated condition of use, and Adzuna's permitted-use list.** Jooble presents its API as being for the webmaster of a portal or search engine republishing Jooble results on their own site; Job Hunter is one person's desktop tool and republishes nothing. Adzuna's terms permit "personal research" and do not name a personal job hunt. Both are close, neither is squarely covered, and reading a stated condition as "does not apply to me" is a judgement about the Sponsor's own exposure rather than a technical call. `docs/SOURCES.md` has the wording. | Sponsor |
+| **Whether relocating to Spain is on the table.** The stored profile says no, and that single field is the biggest lever on the numbers in `docs/SOURCES.md`: Adzuna's Spanish inventory goes from roughly 64 reachable postings a month to roughly 223 if it changes. | Sponsor |
+| **EURES needs a relationship, not an integration.** The Commission publishes no third-party API and restricts API extraction to partner organisations recognised by a National Coordination Office. If the Sponsor wants EURES, the step is to ask a National Coordination Office what partner recognition involves. Also: the clause was read from two agreeing search extracts of the Commission's terms page, while a direct fetch returned a version without that section, so the live page should be read in a browser before anything is decided on it. | Sponsor |
+| **Adzuna's attribution is a build requirement for TASK 022.** Its terms require every displayed advert to carry "Jobs by Adzuna" with the word "Jobs" hyperlinked. RemoteOK, Remotive and Arbeitnow each ask for a link back too. None of this is in the UI today. | TASK 022 |
 | **The pre-migration copy of the live database.** `C:\Users\User\AppData\Local\JobHunter\job_hunter-backup-2026-09-12.db`, taken 2026-09-12 through SQLite's backup API rather than a file copy, because the live database had a 4 MB write-ahead log that a plain `copy` would have left behind. 11 tables, 400 rows: jobs 172, job_scores 153, activity_logs 41, documents 24, applications 4, email_templates 3, candidates 2, automation_config 1, automation_runs 0, email_accounts 0, email_messages 0. TASK 008 verified against a copy of it and it is still untouched; keep it until the live database has been opened by the migrated code at least once. | Sponsor |
 | **A two-pixel sliver of the row above still shows at the top of the log box.** TASK 007c fixed the defect that mattered — the top row is now the start of a whole entry with its timestamp, not the tail of a wrapped one — but the fold lands about two pixels inside the row above, so the bottom of its descenders shows under the border. Measuring with `getBoundingClientRect` for sub-pixel precision was tried, made it worse by putting the orphaned tail back, and was reverted. Cosmetic. | unassigned |
 | **The Sponsor's name is in the pushed tree, in four places, and none of it is contact data.** `backend/tests/smoke_workflow.py` and `backend/tests/test_units.py` use it with the fabricated `nuno@example.com` and `+351 912 000 000` as CV-parser fixtures, `src-tauri/Cargo.toml` carries it as `authors`, and both blueprint copies use it in an example output filename. The repository is private, so nothing is exposed, but invariant 7 says nothing about the Sponsor belongs in code. Whether to neutralise the fixtures is a product decision, not a defect fix. | PO |

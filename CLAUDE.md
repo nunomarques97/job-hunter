@@ -135,6 +135,10 @@ only be confirmed by reading code.
 - Product context and decisions: `docs/BLUEPRINT.md` (§19 before assuming
   anything about packaging, §17 for the task list)
 - Design reference: `DESIGN.md`
+- Job sources: `docs/SOURCES.md` — what each source returns, its publisher's
+  stated conditions quoted verbatim, and its request budget. Read it before
+  adding or querying a source; Jooble's key has a 500-request lifetime limit
+  and six of them are already spent.
 - Current state: `docs/STATE.md` — what is done, in flight, learned and
   still open; updating it is part of every task's definition of done
 - Tooling configured here: `ui-kickoff`, `frontend-design`, the
