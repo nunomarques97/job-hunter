@@ -12,6 +12,7 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -58,6 +59,28 @@ const PROBE_MAX_BYTES: usize = 64 * 1024;
 /// How many ports to try before giving up.
 const PORT_SEARCH_SPAN: u16 = 20;
 
+/// How often a running backend is asked whether it is still there.
+///
+/// The question is the same `/api/health` shape check the port probe asks, not
+/// a TCP connect: a socket that accepts a connection and then says nothing is
+/// precisely the failure a connect cannot see.
+const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How often the supervisor wakes between polls.
+///
+/// Shorter than the poll, because a spawned child that has exited is a fact the
+/// operating system already holds. Waiting out the rest of a ten-second window
+/// to read it would only delay the restart.
+const SUPERVISOR_TICK: Duration = Duration::from_secs(1);
+
+/// How long to wait for `/api/info` when recording where an adopted backend
+/// came from.
+///
+/// Longer than a health probe. That route asks the model runtime about itself,
+/// and the answer is worth waiting for: it is the only record this window will
+/// ever have of a process it did not start, and it is read once.
+const ORIGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Why the backend is not running.
 ///
 /// This is a typed value rather than a message so the interface can tell the
@@ -89,6 +112,23 @@ pub enum StartError {
     NoAnswer { port: u16, waited_seconds: u64 },
     /// The backend was answering and then the process ended.
     Stopped { detail: String },
+    /// The backend stopped after it had already used this window's one
+    /// automatic restart.
+    ///
+    /// Separate from `Stopped` because the remedy is different and because the
+    /// screen must not imply that another restart is coming. Once per window
+    /// session means once — a backend that failed, was restarted, ran for an
+    /// hour and failed again has spent it.
+    RestartExhausted { detail: String, restarted: String },
+    /// The automatic restart was attempted and the new process never answered.
+    RestartFailed { detail: String },
+    /// A backend this window attached to has stopped.
+    ///
+    /// There is no child handle, so there is nothing here to restart. This is
+    /// not a degraded version of `Stopped`: it is a different situation with a
+    /// different answer, and the panel must not offer an action that cannot
+    /// work.
+    AdoptedStopped { port: u16, detail: String },
 }
 
 /// A failure flattened into the fields an interface needs.
@@ -124,6 +164,9 @@ impl StartError {
             StartError::PortUnavailable { .. } => "port_unavailable",
             StartError::NoAnswer { .. } => "no_answer",
             StartError::Stopped { .. } => "stopped",
+            StartError::RestartExhausted { .. } => "restart_exhausted",
+            StartError::RestartFailed { .. } => "restart_failed",
+            StartError::AdoptedStopped { .. } => "adopted_stopped",
         }
     }
 
@@ -152,6 +195,17 @@ impl StartError {
             StartError::Stopped { detail } => {
                 format!("The local service stopped running: {detail}")
             }
+            StartError::RestartExhausted { detail, restarted } => format!(
+                "The local service stopped again ({detail}), and this window had already used \
+                 its one automatic restart at {restarted}."
+            ),
+            StartError::RestartFailed { detail } => format!(
+                "The local service stopped, and starting it again did not work: {detail}"
+            ),
+            StartError::AdoptedStopped { port, detail } => format!(
+                "The service this window attached to on port {port} has stopped ({detail}). \
+                 This window did not start it, so it cannot restart it."
+            ),
         }
     }
 
@@ -167,8 +221,20 @@ impl StartError {
             StartError::PortUnavailable { port, .. } => format!(
                 "Close whatever is listening on port {port}, then start Job Hunter again."
             ),
-            StartError::NoAnswer { .. } | StartError::Stopped { .. } => {
+            StartError::NoAnswer { .. }
+            | StartError::Stopped { .. }
+            | StartError::RestartFailed { .. } => {
                 "Check the backend log, then restart Job Hunter.".to_string()
+            }
+            StartError::RestartExhausted { .. } => {
+                "Close Job Hunter and open it again for a fresh service. The log below has \
+                 both failures."
+                    .to_string()
+            }
+            StartError::AdoptedStopped { .. } => {
+                "Start it again where it was started from, or close Job Hunter and open it \
+                 again to have this window start its own service."
+                    .to_string()
             }
         }
     }
@@ -232,6 +298,50 @@ pub struct Resolved {
     pub in_use: bool,
 }
 
+/// Where an adopted backend came from, asked of the backend itself.
+///
+/// A process this window did not start leaves nothing behind when it stops: no
+/// exit code, no child handle, and no output in this log. The one moment it can
+/// be asked is while it is still answering, so it is asked then and the answer
+/// is kept. Without it the panel can only say that something stopped, which is
+/// the least useful true sentence available.
+#[derive(Debug, Clone, Serialize)]
+pub struct Origin {
+    /// The address this window attached to.
+    pub address: String,
+    /// The interpreter the service reported as its own, if it answered.
+    pub interpreter: Option<String>,
+    /// The data directory it reported as its own, if it answered.
+    pub data_dir: Option<String>,
+}
+
+/// The one automatic restart, once it has been spent.
+#[derive(Debug, Clone, Serialize)]
+pub struct Restart {
+    /// When it happened, in the same UTC stamp the log file uses.
+    pub at: String,
+    /// The failed poll that caused it, worded as the log worded it.
+    pub reason: String,
+}
+
+/// What supervision is doing, and what it is still able to do.
+///
+/// The panel renders this rather than inferring it. "One restart" is a rule
+/// about a window session, and a screen that quietly re-arms it — or that
+/// offers a restart for a process this window never started — would be telling
+/// the person in front of it something that is not true.
+#[derive(Debug, Clone, Serialize)]
+pub struct Supervision {
+    /// Whether anything is polling the backend at all.
+    pub watching: bool,
+    /// Seconds between health polls.
+    pub poll_seconds: u64,
+    /// False for an adopted backend: this window has no handle to restart.
+    pub can_restart: bool,
+    /// The restart, once it has been used. `None` means it is still available.
+    pub restart: Option<Restart>,
+}
+
 /// What the shell can report about the backend right now.
 ///
 /// The window is on screen before any of this is decided, so the renderer asks
@@ -246,18 +356,27 @@ pub enum BackendStatus {
         provenance: Provenance,
         logs_captured: bool,
         resolved: Option<Resolved>,
+        origin: Option<Origin>,
+        supervision: Supervision,
+        launched_at: String,
     },
     Ready {
         port: u16,
         provenance: Provenance,
         logs_captured: bool,
         resolved: Option<Resolved>,
+        origin: Option<Origin>,
+        supervision: Supervision,
+        launched_at: String,
     },
     Failed {
         port: u16,
         provenance: Provenance,
         logs_captured: bool,
         resolved: Option<Resolved>,
+        origin: Option<Origin>,
+        supervision: Supervision,
+        launched_at: String,
         failure: StartFailure,
     },
 }
@@ -286,6 +405,20 @@ pub struct BackendState {
     provenance: Mutex<Provenance>,
     /// The interpreter and package pair, once one has been resolved.
     resolved: Mutex<Option<Resolved>>,
+    /// What an adopted backend said about itself while it was still answering.
+    origin: Mutex<Option<Origin>>,
+    /// The one automatic restart, once it has been spent. This is per window
+    /// session and it is never cleared: a backend that recovers has still used
+    /// it.
+    restart: Mutex<Option<Restart>>,
+    /// Whether a supervisor is running.
+    watching: AtomicBool,
+    /// Set once the window is closing, so the supervisor stops rather than
+    /// treating a deliberate kill as a crash to recover from.
+    stopping: AtomicBool,
+    /// When this window opened, in the log file's own UTC stamp. The panel uses
+    /// it to say which log lines predate this launch.
+    launched_at: String,
 }
 
 impl Default for BackendState {
@@ -297,19 +430,62 @@ impl Default for BackendState {
             decision: Mutex::new(None),
             provenance: Mutex::new(Provenance::Pending),
             resolved: Mutex::new(None),
+            origin: Mutex::new(None),
+            restart: Mutex::new(None),
+            watching: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            launched_at: logging::stamp(),
         }
     }
 }
 
 impl BackendState {
-    /// Stop the backend. Safe to call more than once.
+    /// Stop the backend and stop supervising it. Safe to call more than once.
     pub fn shutdown(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        self.kill_child();
+    }
+
+    /// Kill the child without ending supervision.
+    ///
+    /// The restart path uses this: the process has to go, but the window is not
+    /// closing and the supervisor has more to do.
+    fn kill_child(&self) {
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
         }
+    }
+
+    /// Whether the window is closing.
+    fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Take the one automatic restart, if it has not been taken already.
+    ///
+    /// The check and the claim are one operation under one lock, so two
+    /// failures observed close together cannot both find the budget unspent.
+    /// This is the whole of the restart-once rule.
+    fn claim_restart(&self, reason: &str) -> bool {
+        let Ok(mut guard) = self.restart.lock() else {
+            return false;
+        };
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(Restart {
+            at: logging::stamp(),
+            reason: reason.to_string(),
+        });
+        true
+    }
+
+    /// The restart, if one has happened.
+    fn restart(&self) -> Option<Restart> {
+        self.restart.lock().ok().and_then(|guard| guard.clone())
     }
 
     /// What to tell the renderer.
@@ -321,24 +497,44 @@ impl BackendState {
         // file. An adopted one writes wherever it was started from, and the
         // panel says so rather than presenting an empty log as a symptom.
         let logs_captured = provenance == Provenance::Spawned;
+        let origin = self.origin.lock().unwrap().clone();
+        let launched_at = self.launched_at.clone();
+        let supervision = Supervision {
+            watching: self.watching.load(Ordering::SeqCst),
+            poll_seconds: HEALTH_POLL_INTERVAL.as_secs(),
+            // Only a child this window holds can be started again. An adopted
+            // backend belongs to whoever started it, and the panel offers no
+            // button for it rather than one that cannot work.
+            can_restart: provenance == Provenance::Spawned,
+            restart: self.restart(),
+        };
         match &*self.phase.lock().unwrap() {
             Phase::Starting => BackendStatus::Starting {
                 port,
                 provenance,
                 logs_captured,
                 resolved,
+                origin,
+                supervision,
+                launched_at,
             },
             Phase::Ready => BackendStatus::Ready {
                 port,
                 provenance,
                 logs_captured,
                 resolved,
+                origin,
+                supervision,
+                launched_at,
             },
             Phase::Failed(error) => BackendStatus::Failed {
                 port,
                 provenance,
                 logs_captured,
                 resolved,
+                origin,
+                supervision,
+                launched_at,
                 failure: error.present(),
             },
         }
@@ -358,6 +554,10 @@ impl BackendState {
             package: readable(package),
             in_use,
         });
+    }
+
+    fn set_origin(&self, origin: Origin) {
+        *self.origin.lock().unwrap() = Some(origin);
     }
 }
 
@@ -383,28 +583,52 @@ enum Probe {
 /// Both halves of the exchange are bounded. An unbounded read is what made a
 /// silent socket indistinguishable from a healthy backend.
 fn probe(port: u16) -> Probe {
+    match ask(port, "/api/health", PROBE_READ_TIMEOUT) {
+        Answer::NotListening => Probe::Vacant,
+        Answer::NoReply(reason) => Probe::Foreign(reason),
+        Answer::Reply(response) => classify(&response),
+    }
+}
+
+/// What one bounded HTTP exchange on the loopback interface produced.
+enum Answer {
+    /// The connection was refused. Nothing holds the port.
+    NotListening,
+    /// Something holds the port and did not answer usefully. The sentence says
+    /// how, because that sentence ends up in the log.
+    NoReply(String),
+    /// The raw bytes, headers and all.
+    Reply(Vec<u8>),
+}
+
+/// Ask the loopback port one GET, with both halves of the exchange bounded.
+///
+/// An unbounded read is what once made a silent socket indistinguishable from
+/// a healthy backend, so the bound is the point of this function rather than a
+/// precaution in it.
+fn ask(port: u16, path: &str, read_timeout: Duration) -> Answer {
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
     let mut stream = match TcpStream::connect_timeout(&address.into(), PROBE_CONNECT_TIMEOUT) {
         Ok(stream) => stream,
-        Err(_) => return Probe::Vacant,
+        Err(_) => return Answer::NotListening,
     };
 
-    let _ = stream.set_read_timeout(Some(PROBE_READ_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(PROBE_READ_TIMEOUT));
+    let _ = stream.set_read_timeout(Some(read_timeout));
+    let _ = stream.set_write_timeout(Some(read_timeout));
 
     // `Connection: close` makes the server end the stream itself, so the read
     // below finishes on end-of-file rather than on the timeout.
     let request = format!(
-        "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
          Accept: application/json\r\nConnection: close\r\n\r\n"
     );
     if let Err(error) = stream.write_all(request.as_bytes()) {
-        return Probe::Foreign(format!(
+        return Answer::NoReply(format!(
             "it accepted a connection and then refused the request ({error})"
         ));
     }
 
-    let deadline = Instant::now() + PROBE_READ_TIMEOUT;
+    let deadline = Instant::now() + read_timeout;
     let mut response = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -421,9 +645,56 @@ fn probe(port: u16) -> Probe {
     }
 
     if response.is_empty() {
-        return Probe::Foreign("it accepted a connection and sent nothing back".to_string());
+        return Answer::NoReply("it accepted a connection and sent nothing back".to_string());
     }
-    classify(&response)
+    Answer::Reply(response)
+}
+
+/// The body of a 200, parsed as JSON.
+fn body(response: &[u8]) -> Option<serde_json::Value> {
+    let head = String::from_utf8_lossy(&response[..response.len().min(256)]);
+    let status = head.lines().next().unwrap_or("").trim();
+    if !status.starts_with("HTTP/") || status.split_whitespace().nth(1) != Some("200") {
+        return None;
+    }
+    // The first brace starts the body of a plain response and the first chunk
+    // of a chunked one. Parsing the first value and ignoring what follows
+    // covers both without a transfer-encoding parser.
+    let start = response.iter().position(|byte| *byte == b'{')?;
+    serde_json::Deserializer::from_slice(&response[start..])
+        .into_iter::<serde_json::Value>()
+        .next()?
+        .ok()
+}
+
+/// Ask an adopted backend where it is running from, while it still can answer.
+///
+/// Nothing here is required for the window to work, so every failure is simply
+/// no answer. What it buys is the difference between "the service stopped" and
+/// "the service that was running from this interpreter, with its data here,
+/// stopped" on the one screen that has to be useful when everything else is
+/// not.
+fn fetch_origin(port: u16) -> Origin {
+    let mut origin = Origin {
+        address: format!("127.0.0.1:{port}"),
+        interpreter: None,
+        data_dir: None,
+    };
+    let Answer::Reply(response) = ask(port, "/api/info", ORIGIN_READ_TIMEOUT) else {
+        return origin;
+    };
+    let Some(info) = body(&response) else {
+        return origin;
+    };
+    let text = |key: &str| {
+        info.get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+    };
+    origin.interpreter = text("python_executable");
+    origin.data_dir = text("data_dir");
+    origin
 }
 
 /// Decide whether an HTTP response came from this backend.
@@ -438,17 +709,7 @@ fn classify(response: &[u8]) -> Probe {
         return Probe::Foreign(format!("it answered /api/health with `{status}`"));
     }
 
-    // The first brace starts the body of a plain response and the first chunk
-    // of a chunked one. Parsing the first value and ignoring what follows
-    // covers both without a transfer-encoding parser.
-    let Some(start) = response.iter().position(|byte| *byte == b'{') else {
-        return Probe::Foreign(
-            "it answered /api/health with something that is not JSON".to_string(),
-        );
-    };
-    let mut values =
-        serde_json::Deserializer::from_slice(&response[start..]).into_iter::<serde_json::Value>();
-    let Some(Ok(body)) = values.next() else {
+    let Some(body) = body(response) else {
         return Probe::Foreign(
             "it answered /api/health with something that is not JSON".to_string(),
         );
@@ -671,28 +932,176 @@ fn ended(state: &BackendState) -> Option<String> {
     }
 }
 
-/// Watch the child until it ends, and record why.
+/// What supervision does about a backend that has stopped answering.
 ///
-/// Without this a backend that crashes or is killed simply stops answering,
-/// and the interface has nothing to say beyond a failed request. The phase
-/// changes, so the startup screen comes back with the reason.
-fn monitor(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(1000));
-        let state = app.state::<BackendState>();
+/// Kept as a decision over two facts rather than as branches inside the loop,
+/// because this is the rule the task is about and a rule that cannot be tested
+/// on its own is a rule nobody can check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Response {
+    /// This window started it and has not used its restart. Start it again.
+    Restart,
+    /// This window started it and the restart is already spent. Stop trying
+    /// and say so.
+    GiveUp,
+    /// This window attached to it. It was never ours to restart; explain that
+    /// instead of attempting anything.
+    Explain,
+}
 
-        // Shutdown took the child; there is nothing left to watch.
-        if state.child.lock().map(|guard| guard.is_none()).unwrap_or(true) {
-            return;
+fn respond(provenance: Provenance, restart_used: bool) -> Response {
+    match provenance {
+        // Pending means nothing was ever started, so there is nothing to
+        // recover and nothing to claim. It reaches supervision only if a
+        // supervisor were started before a process existed, which start()
+        // does not do — the arm is here so the rule is total rather than
+        // relying on that.
+        Provenance::Adopted | Provenance::Pending => Response::Explain,
+        Provenance::Spawned if restart_used => Response::GiveUp,
+        Provenance::Spawned => Response::Restart,
+    }
+}
+
+/// Watch the backend, restart it once if it was ours, explain it otherwise.
+///
+/// Two signals, one decision. A spawned child that has exited is read from the
+/// operating system every tick, because it is certain and immediate. Everything
+/// else — a process still running that has stopped answering, and an adopted
+/// backend, which has no child handle at all — comes from the health poll.
+fn supervise(app: AppHandle) {
+    std::thread::spawn(move || {
+        {
+            let state = app.state::<BackendState>();
+            state.watching.store(true, Ordering::SeqCst);
+            let provenance = *state.provenance.lock().unwrap();
+            logging::shell(&format!(
+                "supervising the backend: a health poll every {}s, {}",
+                HEALTH_POLL_INTERVAL.as_secs(),
+                match provenance {
+                    Provenance::Spawned =>
+                        "one automatic restart available for this window session",
+                    _ => "no restart — this window did not start it",
+                }
+            ));
         }
 
-        if let Some(detail) = ended(&state) {
-            logging::shell(&format!("the backend ended: {detail}"));
-            state.child.lock().unwrap().take();
-            state.set_phase(Phase::Failed(StartError::Stopped { detail }));
-            return;
+        let mut last_poll = Instant::now();
+        loop {
+            std::thread::sleep(SUPERVISOR_TICK);
+            let state = app.state::<BackendState>();
+
+            if state.stopping() {
+                state.watching.store(false, Ordering::SeqCst);
+                return;
+            }
+            // A failure has been recorded and the panel is showing it. Saying
+            // it again every second would only churn the log.
+            if matches!(&*state.phase.lock().unwrap(), Phase::Failed(_)) {
+                state.watching.store(false, Ordering::SeqCst);
+                return;
+            }
+
+            let provenance = *state.provenance.lock().unwrap();
+            let port = *state.port.lock().unwrap();
+
+            let mut trouble = match provenance {
+                Provenance::Spawned => ended(&state),
+                _ => None,
+            };
+
+            if trouble.is_none() {
+                if last_poll.elapsed() < HEALTH_POLL_INTERVAL {
+                    continue;
+                }
+                last_poll = Instant::now();
+                trouble = match probe(port) {
+                    Probe::Ours => None,
+                    Probe::Vacant => Some(format!("nothing is listening on port {port}")),
+                    Probe::Foreign(reason) => {
+                        Some(format!("the health check on port {port} failed: {reason}"))
+                    }
+                };
+            }
+
+            let Some(detail) = trouble else { continue };
+            logging::shell(&format!("the backend stopped answering: {detail}"));
+
+            match respond(provenance, state.restart().is_some()) {
+                Response::Explain => {
+                    logging::shell(
+                        "no restart: this window attached to that service rather than \
+                         starting it, so it has no handle to restart",
+                    );
+                    state.set_phase(Phase::Failed(StartError::AdoptedStopped { port, detail }));
+                    state.watching.store(false, Ordering::SeqCst);
+                    return;
+                }
+                Response::GiveUp => {
+                    let restarted = state
+                        .restart()
+                        .map(|restart| restart.at)
+                        .unwrap_or_else(|| "earlier in this session".to_string());
+                    logging::shell(
+                        "no second restart: the one automatic restart for this window session \
+                         has been used. Close Job Hunter and open it again.",
+                    );
+                    state.set_phase(Phase::Failed(StartError::RestartExhausted {
+                        detail,
+                        restarted,
+                    }));
+                    state.watching.store(false, Ordering::SeqCst);
+                    return;
+                }
+                Response::Restart => {
+                    // The claim is what spends the budget, and it is made
+                    // before the attempt: a restart that fails has still been
+                    // used.
+                    if !state.claim_restart(&detail) {
+                        continue;
+                    }
+                    match restart(&app, &state, port, &detail) {
+                        Ok(()) => last_poll = Instant::now(),
+                        Err(error) => {
+                            logging::shell(&format!("the restart failed: {}", error.summary()));
+                            state.set_phase(Phase::Failed(error));
+                            state.watching.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+            }
         }
     });
+}
+
+/// Start the backend again, on the same port, after a failed poll.
+fn restart(
+    app: &AppHandle,
+    state: &BackendState,
+    port: u16,
+    reason: &str,
+) -> Result<(), StartError> {
+    logging::shell(&format!(
+        "restarting the backend on port {port}. Reason: {reason}. This is the one automatic \
+         restart in this window session; a second failure stops and shows diagnostics."
+    ));
+    state.set_phase(Phase::Starting);
+    // The process is usually gone already. When it is not — a backend that
+    // stopped answering while still running — it has to go before another one
+    // tries to take the port.
+    state.kill_child();
+
+    spawn_child(app, state, port).and_then(|()| await_answer(state, port)).map_err(|error| {
+        StartError::RestartFailed {
+            detail: error.summary(),
+        }
+    })?;
+
+    state.set_phase(Phase::Ready);
+    logging::shell(&format!(
+        "the backend answered again on port {port} after its one automatic restart"
+    ));
+    Ok(())
 }
 
 /// Start the backend and wait until it answers.
@@ -714,11 +1123,11 @@ pub fn start(app: &AppHandle) -> Result<u16, StartError> {
         Ok(port) => {
             state.set_phase(Phase::Ready);
             logging::shell(&format!("the backend is answering on port {port}"));
-            // Only a backend this shell started can be watched. One adopted on
-            // an already-busy port belongs to whoever started it.
-            if state.child.lock().unwrap().is_some() {
-                monitor(app.clone());
-            }
+            // Both kinds are watched. Only one of them can be restarted, and
+            // the supervisor is where that difference is decided: an adopted
+            // backend that stops is a thing the window has to explain, which
+            // it cannot do if nothing is looking.
+            supervise(app.clone());
             Ok(port)
         }
         Err(error) => {
@@ -753,6 +1162,21 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
                 "attached to a backend this shell did not start: it is not stopped on exit, \
                  cannot be restarted, and its output does not reach this log",
             );
+            // Asked now, while it can still answer. Once it stops there is
+            // nothing left to ask, and "a service stopped" with no idea which
+            // one is the least useful true sentence the panel could show.
+            let origin = fetch_origin(port);
+            match (&origin.interpreter, &origin.data_dir) {
+                (Some(interpreter), Some(data_dir)) => logging::shell(&format!(
+                    "the adopted backend reports it is running {interpreter} with its data in \
+                     {data_dir}"
+                )),
+                _ => logging::shell(
+                    "the adopted backend did not say where it is running from; only the \
+                     address it was attached on is known",
+                ),
+            }
+            state.set_origin(origin);
             return Ok(port);
         }
         Some(PortChoice::Spawn(port)) => port,
@@ -760,6 +1184,17 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
         None => *state.port.lock().unwrap(),
     };
 
+    spawn_child(app, state, port)?;
+    await_answer(state, port)?;
+    Ok(port)
+}
+
+/// Resolve the pair, start the process, and put its output into the log.
+///
+/// Separate from the wait that follows it because the restart path needs both
+/// halves and nothing else: the port is already decided, and re-deciding it
+/// would move a backend the renderer has an address for.
+fn spawn_child(app: &AppHandle, state: &BackendState, port: u16) -> Result<(), StartError> {
     // Resolved before anything is spawned, so a missing environment costs a
     // few file system checks rather than a process and a timeout.
     let (backend, python) = resolve(app)?;
@@ -813,11 +1248,16 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
     }
 
     *state.child.lock().unwrap() = Some(child);
+    Ok(())
+}
 
+/// Wait until the spawned backend answers on its port, or until it is clear
+/// that it will not.
+fn await_answer(state: &BackendState, port: u16) -> Result<(), StartError> {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         if let Probe::Ours = probe(port) {
-            return Ok(port);
+            return Ok(());
         }
 
         // The port is bound before uvicorn serves, so a connection that goes
@@ -825,14 +1265,14 @@ fn run(app: &AppHandle, state: &tauri::State<'_, BackendState>) -> Result<u16, S
         // that has ended is not: it is the whole answer, and waiting out the
         // rest of the timeout would only delay it.
         if let Some(detail) = ended(state) {
-            state.shutdown();
+            state.kill_child();
             return Err(StartError::Stopped { detail });
         }
 
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    state.shutdown();
+    state.kill_child();
     Err(StartError::NoAnswer {
         port,
         waited_seconds: STARTUP_TIMEOUT.as_secs(),
@@ -1083,6 +1523,133 @@ mod tests {
             !probed.iter().any(|path| path == "python" || path == "python3"),
             "a bare interpreter name is not a candidate any more: {probed:?}"
         );
+    }
+
+    /// The rule this task exists for: one restart per window session.
+    ///
+    /// Not one per failure. A backend that fails, is restarted, runs for an
+    /// hour and fails again has spent it, and the second failure has to stop
+    /// and explain rather than start the cycle over.
+    #[test]
+    fn a_spawned_backend_is_restarted_once_and_then_given_up_on() {
+        assert_eq!(respond(Provenance::Spawned, false), Response::Restart);
+        assert_eq!(respond(Provenance::Spawned, true), Response::GiveUp);
+    }
+
+    /// A backend this window attached to is never restarted, whatever the
+    /// budget says. There is no child handle to restart, and offering one
+    /// would be offering something that cannot work.
+    #[test]
+    fn an_adopted_backend_is_never_restarted() {
+        assert_eq!(respond(Provenance::Adopted, false), Response::Explain);
+        assert_eq!(respond(Provenance::Adopted, true), Response::Explain);
+        assert_eq!(respond(Provenance::Pending, false), Response::Explain);
+    }
+
+    /// The budget is claimed once, under one lock, so two failures seen close
+    /// together cannot both find it unspent.
+    #[test]
+    fn the_restart_budget_is_claimed_exactly_once() {
+        quiet();
+        let state = BackendState::default();
+
+        assert!(state.restart().is_none(), "it starts unspent");
+        assert!(state.claim_restart("the first failure"));
+        assert!(
+            !state.claim_restart("the second failure"),
+            "a second claim must fail, whenever it arrives"
+        );
+
+        let restart = state.restart().expect("the restart is recorded");
+        assert_eq!(restart.reason, "the first failure");
+        assert!(!restart.at.is_empty(), "the restart carries when it happened");
+    }
+
+    /// Two threads racing on the same failure must not produce two restarts.
+    #[test]
+    fn only_one_of_two_racing_claims_wins() {
+        quiet();
+        let state = std::sync::Arc::new(BackendState::default());
+        let winners: Vec<bool> = (0..8)
+            .map(|index| {
+                let state = state.clone();
+                std::thread::spawn(move || state.claim_restart(&format!("failure {index}")))
+            })
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        assert_eq!(
+            winners.iter().filter(|won| **won).count(),
+            1,
+            "exactly one claim wins: {winners:?}"
+        );
+    }
+
+    /// The panel reads this to say what supervision can still do. An adopted
+    /// backend must never report that it can be restarted.
+    #[test]
+    fn the_status_reports_what_supervision_can_do() {
+        quiet();
+        let state = BackendState::default();
+        state.set_provenance(Provenance::Adopted);
+        let BackendStatus::Starting { supervision, .. } = state.status() else {
+            panic!("a fresh state is starting");
+        };
+        assert!(!supervision.can_restart);
+        assert!(supervision.restart.is_none());
+        assert_eq!(supervision.poll_seconds, HEALTH_POLL_INTERVAL.as_secs());
+
+        state.set_provenance(Provenance::Spawned);
+        state.claim_restart("the backend stopped answering");
+        let BackendStatus::Starting { supervision, .. } = state.status() else {
+            panic!("a fresh state is starting");
+        };
+        assert!(supervision.can_restart);
+        assert_eq!(
+            supervision.restart.map(|restart| restart.reason),
+            Some("the backend stopped answering".to_string()),
+            "the used restart is visible, so the panel never re-arms it silently"
+        );
+    }
+
+    /// A window that is closing is not a backend that crashed. The supervisor
+    /// has to be able to tell them apart or it would fight the shutdown.
+    #[test]
+    fn shutdown_stops_supervision() {
+        quiet();
+        let state = BackendState::default();
+        assert!(!state.stopping());
+        state.shutdown();
+        assert!(state.stopping());
+    }
+
+    /// The failure the panel shows after the second kill has to say both
+    /// things: what happened now, and that the restart is gone.
+    #[test]
+    fn the_exhausted_failure_names_the_restart_it_already_used() {
+        let error = StartError::RestartExhausted {
+            detail: "nothing is listening on port 8756".to_string(),
+            restarted: "2026-09-12 09:14:02Z".to_string(),
+        };
+        let summary = error.summary();
+        assert!(summary.contains("nothing is listening on port 8756"), "{summary}");
+        assert!(summary.contains("2026-09-12 09:14:02Z"), "{summary}");
+        assert!(summary.contains("already used"), "{summary}");
+        assert!(!error.remedy().is_empty());
+    }
+
+    /// The adopted failure has to say why no restart is coming, and name the
+    /// port the window attached to.
+    #[test]
+    fn the_adopted_failure_explains_why_nothing_is_restarted() {
+        let error = StartError::AdoptedStopped {
+            port: 8756,
+            detail: "nothing is listening on port 8756".to_string(),
+        };
+        let summary = error.summary();
+        assert!(summary.contains("8756"), "{summary}");
+        assert!(summary.contains("did not start it"), "{summary}");
+        assert_eq!(error.kind(), "adopted_stopped");
     }
 
     /// A virtual environment that exists is the one that gets launched.

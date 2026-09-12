@@ -39,6 +39,48 @@ export interface Resolved {
   in_use: boolean;
 }
 
+/**
+ * Where an adopted backend was running from, asked of it while it still
+ * answered.
+ *
+ * A process this window did not start leaves nothing behind when it stops. This
+ * is the only record of it, and it is what the panel has to show instead of
+ * offering a restart it cannot perform.
+ */
+export interface Origin {
+  /** The address this window attached to. */
+  address: string;
+  /** The interpreter the service reported as its own, if it answered. */
+  interpreter: string | null;
+  /** The data directory it reported as its own, if it answered. */
+  data_dir: string | null;
+}
+
+/** The one automatic restart, once it has been used. */
+export interface Restart {
+  /** The UTC stamp the log file uses. */
+  at: string;
+  /** The failed poll that caused it. */
+  reason: string;
+}
+
+/**
+ * What supervision is doing, and what it is still able to do.
+ *
+ * Rendered rather than inferred. One restart is a rule about a window session,
+ * so a screen that implies another one is coming — or that offers a restart for
+ * a process this window never started — would be saying something untrue on the
+ * one screen that must not.
+ */
+export interface Supervision {
+  watching: boolean;
+  poll_seconds: number;
+  /** False for an adopted backend: this window has no handle to restart. */
+  can_restart: boolean;
+  /** The restart, once spent. `null` means it is still available. */
+  restart: Restart | null;
+}
+
 /** Facts every backend state carries, whatever the state is. */
 interface BackendFacts {
   port: number;
@@ -48,6 +90,11 @@ interface BackendFacts {
    *  perfectly healthy. */
   logs_captured: boolean;
   resolved: Resolved | null;
+  origin: Origin | null;
+  supervision: Supervision;
+  /** When this window opened, in the log file's own UTC stamp. The panel uses
+   *  it to say which log lines were written before this launch. */
+  launched_at: string;
 }
 
 /** What the shell knows about the backend process. */

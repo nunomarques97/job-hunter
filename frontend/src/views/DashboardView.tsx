@@ -82,9 +82,9 @@ export function DashboardView() {
           </h1>
           <p className="t-body secondary" style={{ marginTop: 2 }}>
             {overview.jobs_discovered > 0
-              ? `${formatNumber(overview.strong_matches)} strong matches waiting out of ${formatNumber(
-                  overview.jobs_discovered,
-                )} postings.`
+              ? `${formatNumber(overview.strong_matches)} strong ${
+                  overview.strong_matches === 1 ? 'match' : 'matches'
+                } waiting out of ${formatNumber(overview.jobs_discovered)} postings.`
               : 'Nothing discovered yet. Run a search to start filling your queue.'}
           </p>
         </div>

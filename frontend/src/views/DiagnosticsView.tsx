@@ -83,7 +83,10 @@ export function DiagnosticsView({
     onRecheck?.();
   };
 
-  const shellLines = useMemo(() => describeShell(status, logPath), [status, logPath]);
+  const shellLines = useMemo(
+    () => describeShell(status, logPath, info.data?.python_executable ?? null),
+    [status, logPath, info.data],
+  );
 
   const copy = async () => {
     setCopying(true);
@@ -186,6 +189,19 @@ function ServiceCard({ status, info }: { status: BackendStatus | null; info: Sys
   const outside = !inShell();
   const adopted = status?.provenance === 'adopted';
   const resolved = status?.resolved ?? null;
+  // Nothing was ever started: no spawn was attempted, so the port below is one
+  // this window would have used rather than one anything is on.
+  const nothingStarted = status?.state === 'failed' && status.provenance === 'pending';
+  const origin = status?.origin ?? null;
+  // An adopted backend resolves a pair it is not using — except when the
+  // service turns out to be running the very same interpreter, which on a
+  // one-machine install is the normal case. Calling that "not in use" sends
+  // the reader looking for a second Python that does not exist. The live
+  // answer is preferred; the one recorded before the service stopped is the
+  // fallback, so the sentence survives the thing it describes.
+  const live = info?.python_executable ?? null;
+  const sameAsLive = samePath(resolved?.interpreter, live);
+  const sameAsStopped = !live && samePath(resolved?.interpreter, origin?.interpreter);
 
   const state = (() => {
     if (outside) return { label: 'Unknown', tone: 'neutral' as const };
@@ -246,19 +262,26 @@ function ServiceCard({ status, info }: { status: BackendStatus | null; info: Sys
               label="Port"
               value={status ? String(status.port) : '—'}
               hint={
-                info && status && info.port !== status.port
-                  ? `the service was configured for ${info.port}`
-                  : undefined
+                nothingStarted
+                  ? 'the port this window would have used — nothing is listening on it'
+                  : info && status && info.port !== status.port
+                    ? `the service was configured for ${info.port}`
+                    : undefined
               }
               mono
             />
+            {status && <SupervisionRow status={status} />}
             <Row
               label="Python interpreter"
               value={resolved?.interpreter ?? '—'}
               hint={
-                resolved && !resolved.in_use
-                  ? 'not in use — this is what the window would have used'
-                  : undefined
+                !resolved || resolved.in_use
+                  ? undefined
+                  : sameAsLive
+                    ? 'the same interpreter the running service reports for itself'
+                    : sameAsStopped
+                      ? 'the same interpreter the service that stopped was running'
+                      : 'not in use — this is what the window would have used'
               }
               mono
             />
@@ -270,6 +293,25 @@ function ServiceCard({ status, info }: { status: BackendStatus | null; info: Sys
               }
               mono
             />
+            {origin && status?.state === 'failed' && (
+              <>
+                <div className="t-overline muted" style={{ marginTop: 4 }}>
+                  Where that service was running
+                </div>
+                <Row label="Attached on" value={origin.address} mono />
+                <Row
+                  label="Its interpreter"
+                  value={origin.interpreter ?? 'unknown'}
+                  hint={
+                    origin.interpreter
+                      ? 'read from the service itself while it was still answering'
+                      : 'it stopped before this window could ask'
+                  }
+                  mono
+                />
+                {origin.data_dir && <Row label="Its data folder" value={origin.data_dir} mono />}
+              </>
+            )}
           </>
         )}
         {info && (
@@ -286,6 +328,42 @@ function ServiceCard({ status, info }: { status: BackendStatus | null; info: Sys
       </div>
     </Card>
   );
+}
+
+/**
+ * What is watching the service, and what it is still allowed to do about it.
+ *
+ * The restart is one per window session, not one per failure. A screen that
+ * left that implicit would be read as "it will keep restarting", which is the
+ * one thing it will not do — so the used restart is shown with the failure that
+ * spent it and the time it happened.
+ */
+function SupervisionRow({ status }: { status: BackendStatus }) {
+  const { supervision } = status;
+  // Nothing was ever started, so there is nothing being watched and nothing to
+  // restart. Saying "it cannot be restarted" here would answer a question
+  // nobody asked about a process that never existed.
+  const nothingStarted = status.state === 'failed' && status.provenance === 'pending';
+
+  const value = supervision.watching
+    ? `Checked every ${supervision.poll_seconds} seconds`
+    : nothingStarted
+      ? 'Nothing to watch'
+      : status.state === 'failed'
+        ? 'Stopped — the failure above is the last thing it saw'
+        : 'Not started yet';
+
+  const hint = supervision.restart
+    ? `the one automatic restart was used at ${localStamp(supervision.restart.at)} — ${
+        supervision.restart.reason
+      }. There is no second one in this window.`
+    : nothingStarted
+      ? 'no service was started, so nothing is being checked'
+      : supervision.can_restart
+        ? 'one automatic restart is available, once, for this window'
+        : 'this window did not start the service, so it cannot restart it';
+
+  return <Row label="Supervision" value={value} hint={hint} />;
 }
 
 /* ---------- The model ---------- */
@@ -515,6 +593,12 @@ function LogCard({
     bottom.current?.scrollTo({ top: bottom.current.scrollHeight });
   }, [lines]);
 
+  // Which of these lines this launch actually wrote. The file is a day long
+  // and a launch is minutes, so the tail of it is usually somebody else's
+  // afternoon — and an unlabelled log tail beside a failure reads as evidence
+  // about that failure when it is nothing of the kind.
+  const launchedAt = status?.launched_at ?? '';
+
   const rows = useMemo(
     () =>
       lines.map((line) => {
@@ -531,12 +615,21 @@ function LogCard({
     [lines],
   );
 
+  // The stamps are fixed-width UTC, so comparing them as text compares them as
+  // times. A line the parser could not read carries no stamp and stays with
+  // whatever came before it.
+  const firstOfThisLaunch = useMemo(
+    () => (launchedAt ? rows.findIndex((row) => row.utc && row.utc >= launchedAt) : -1),
+    [rows, launchedAt],
+  );
+  const nothingFromThisLaunch = rows.length > 0 && firstOfThisLaunch === -1;
+
   return (
     <Card className="span-12">
       <CardHead
         title="Service log"
         icon="history"
-        subtitle={`Times converted to this machine's clock (${zone}). The file itself is in UTC.`}
+        subtitle={`The end of today's file. Times converted to this machine's clock (${zone}); the file itself is in UTC.`}
         action={
           path ? (
             <span
@@ -560,6 +653,15 @@ function LogCard({
             </div>
           </Notice>
         )}
+        {!adopted && nothingFromThisLaunch && (
+          <Notice tone="info">
+            <div className="t-small">This launch has written nothing to the log.</div>
+            <div className="t-caption secondary">
+              Every line below is the end of today's file, written before this window opened at{' '}
+              {localStamp(launchedAt)}. None of it is evidence about what is wrong now.
+            </div>
+          </Notice>
+        )}
         <div className="row" style={{ gap: 12 }}>
           <span
             className="t-overline muted"
@@ -577,26 +679,43 @@ function LogCard({
                 : 'The log is only readable from the desktop window.'}
             </span>
           ) : (
+            // Every cell is one 20px line, and nothing separates the rows but
+            // that line height. A row gap would make the pitch uneven, and the
+            // box is scrolled to the bottom against a height measured in whole
+            // lines — which is what keeps the first line from being cut in
+            // half by the top border.
             <div
               style={{
                 display: 'grid',
                 gridTemplateColumns: 'auto minmax(0, 1fr)',
                 columnGap: 12,
-                rowGap: 4,
+                rowGap: 0,
               }}
             >
               {rows.map((row, index) => (
                 <Fragment key={`${index}-${row.text}`}>
+                  {index === firstOfThisLaunch && index > 0 && (
+                    <span
+                      className="t-caption mono muted"
+                      style={{ gridColumn: '1 / -1', lineHeight: '20px' }}
+                    >
+                      ——— this window opened here ———
+                    </span>
+                  )}
                   <span
                     className="t-caption mono muted"
-                    style={{ whiteSpace: 'nowrap', width: 92 }}
+                    style={{ whiteSpace: 'nowrap', width: 92, lineHeight: '20px' }}
                     title={row.utc ? `${row.utc} in the file` : undefined}
                   >
                     {row.time || '·'}
                   </span>
                   <span
                     className="t-caption mono"
-                    style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      overflowWrap: 'anywhere',
+                      lineHeight: '20px',
+                    }}
                   >
                     {row.text}
                   </span>
@@ -611,6 +730,29 @@ function LogCard({
 }
 
 /* ---------- Shared pieces ---------- */
+
+/** A `YYYY-MM-DD HH:MM:SSZ` stamp from the log, read on this machine's clock. */
+function localStamp(utc: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})Z$/.exec(utc.trim());
+  if (!match) return utc;
+  const [, year, month, day, hour, minute, second] = match;
+  return new Date(
+    Date.UTC(+year, +month - 1, +day, +hour, +minute, +second),
+  ).toLocaleTimeString();
+}
+
+/**
+ * Whether two paths name the same file.
+ *
+ * Windows accepts either separator and ignores case, so two spellings of one
+ * interpreter are common and comparing the strings as they arrive would report
+ * a difference that does not exist.
+ */
+function samePath(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
+  const normalise = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalise(left) === normalise(right);
+}
 
 type Tone = 'success' | 'info' | 'warn' | 'danger' | 'neutral';
 
@@ -662,7 +804,11 @@ function Row({
 }
 
 /** The shell's side of the report, as the lines the backend redacts and returns. */
-function describeShell(status: BackendStatus | null, logPath: string): string[] {
+function describeShell(
+  status: BackendStatus | null,
+  logPath: string,
+  serviceInterpreter: string | null,
+): string[] {
   if (!status) {
     return inShell()
       ? ['state             the desktop shell has not answered yet']
@@ -686,12 +832,43 @@ function describeShell(status: BackendStatus | null, logPath: string): string[] 
           ? 'yes'
           : 'nothing is running to capture'
     }`,
-    `port              ${status.port}`,
+    `port              ${status.port}${
+      status.state === 'failed' && status.provenance === 'pending'
+        ? '  (would have been used — nothing was started on it)'
+        : ''
+    }`,
+    `window opened     ${status.launched_at}`,
+    `health poll       ${
+      status.supervision.watching
+        ? `every ${status.supervision.poll_seconds}s`
+        : 'not running'
+    }`,
+    `restart           ${
+      status.supervision.restart
+        ? `used at ${status.supervision.restart.at} — ${status.supervision.restart.reason}`
+        : status.supervision.can_restart
+          ? 'available, once, for this window'
+          : 'not possible — this window did not start the service'
+    }`,
   ];
   if (status.resolved) {
-    const suffix = status.resolved.in_use ? '' : '  (not in use — would have been used)';
+    const service = serviceInterpreter ?? status.origin?.interpreter ?? null;
+    const suffix = status.resolved.in_use
+      ? ''
+      : samePath(status.resolved.interpreter, service)
+        ? '  (the same interpreter the service reports)'
+        : '  (not in use — would have been used)';
     lines.push(`interpreter       ${status.resolved.interpreter}${suffix}`);
-    lines.push(`backend package   ${status.resolved.package}${suffix}`);
+    lines.push(
+      `backend package   ${status.resolved.package}${
+        status.resolved.in_use ? '' : '  (resolved beside the interpreter above)'
+      }`,
+    );
+  }
+  if (status.origin) {
+    lines.push(`attached on       ${status.origin.address}`);
+    lines.push(`its interpreter   ${status.origin.interpreter ?? 'unknown'}`);
+    if (status.origin.data_dir) lines.push(`its data folder   ${status.origin.data_dir}`);
   }
   if (logPath) lines.push(`log file          ${logPath}`);
   if (status.state === 'failed') {

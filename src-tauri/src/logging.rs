@@ -107,7 +107,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
-fn stamp() -> String {
+/// The UTC stamp every line in the file carries, and the one the shell hands
+/// the window so it can say which lines predate this launch.
+pub fn stamp() -> String {
     let (year, month, day, hour, minute, second) = now_utc();
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}Z")
 }

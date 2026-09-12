@@ -1114,10 +1114,17 @@ table.data .num {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 12px;
-  max-height: 240px;
+  /* Every line in here is exactly 20px tall, and the tail is scrolled to the
+     bottom. That means the top edge of the box lands wherever the arithmetic
+     puts it — and with the old 240px it landed mid-line, so the first row
+     rendered as a clipped half-line under the border. A scrollport of
+     12px + a whole number of lines makes the cut fall on a line boundary
+     instead: 11 lines, plus the padding the scroll edge sits in, plus the two
+     borders. */
+  max-height: calc(11 * 20px + 12px + 2px);
   overflow: auto;
   color: var(--text-secondary);
-  line-height: 18px;
+  line-height: 20px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
