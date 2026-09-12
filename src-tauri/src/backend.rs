@@ -232,8 +232,13 @@ impl StartError {
                     .to_string()
             }
             StartError::AdoptedStopped { .. } => {
-                "Start it again where it was started from, or close Job Hunter and open it \
-                 again to have this window start its own service."
+                // Deliberately one instruction rather than two. Starting the
+                // service again does not bring this window back: it attached
+                // once, at launch, and nothing re-attaches it. Saying "start it
+                // again" on its own would be the kind of half-true remedy this
+                // screen exists to avoid.
+                "Close Job Hunter and open it again. If the service is running by then this \
+                 window attaches to it; if not, it starts its own."
                     .to_string()
             }
         }
