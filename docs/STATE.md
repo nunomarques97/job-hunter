@@ -38,20 +38,37 @@ is part of every task's definition of done.
   (folded into the TASK 005 commit by mistake instead of getting its own),
   the `CLAUDE.md` half is `054d878`.
 
+- **TASK 007 — Backend supervision, and five honesty fixes in the panel.**
+  The shell polls `GET /api/health` every ten seconds once the backend is up.
+  A backend this window spawned is restarted **once per window session** — not
+  once per failure — and the restart, its reason and its time are written to
+  the log and shown in the panel, so nothing silently re-arms. A second failure
+  stops and shows the diagnostic panel with the log tail. A backend the window
+  *adopted* is polled and never restarted: the panel says it has stopped, that
+  this window cannot restart something it did not start, and where it was
+  running — the interpreter and data directory the service reported for itself,
+  read from `/api/info` at adoption while it could still answer. Shutdown is
+  unchanged: a spawned child dies with the window, an adopted one keeps
+  running. Five panel fixes landed with it: the adopted interpreter row says
+  "the same interpreter" when it matches the one the service reports rather
+  than "not in use"; the unreachable state's port reads as the one it *would*
+  have used; the log tail is labelled as the end of today's file and marks
+  where this launch began; the first log line is no longer clipped in half
+  (the scroll box is now a whole number of 20px lines); and the Dashboard says
+  "1 strong match", not "matches". *Commit: `8abbae2`.*
+
 ## Current work unit
 
-None. TASK 006b is complete; TASK 005b (this change) closes out loose ends
-it left behind — committed screenshots, this reconciliation, and a check
-that the toast move did not regress the rest of the app.
+None.
 
 ## Next work unit
 
-**TASK 007 — backend supervision.** A health poll every ten seconds, one
-automatic restart on a failed poll, and the diagnostic panel with the log tail
-on a second failure. The panel is already built to show it: an adopted backend
-is labelled as one supervision cannot restart, so TASK 007 only has to decide
-what it does rather than how it is displayed. After Phase A: TASK 008
-(Alembic), then 013–019 (truthfulness and documents), then 021–024 (sources).
+**TASK 008 — Introduce Alembic.** `init_db` runs `alembic upgrade head`
+instead of `create_all`; an existing database is stamped at the baseline
+revision without data loss. It also owns the `JOB_HUNTER_DATA_DIR` /
+`JOB_HUNTER_DATABASE_URL` resolution below, which must be settled *before* a
+migration ever runs. After that: 013–019 (truthfulness and documents), then
+021–024 (sources).
 
 ## What Phase A taught us
 
@@ -72,6 +89,13 @@ what it does rather than how it is displayed. After Phase A: TASK 008
   code that wrote it there is gone, but the data was not, and it sat inside a
   directory `cargo clean` deletes. Check for orphaned data before assuming a
   build-output directory is disposable.
+- **A process you did not start can only be asked about itself while it is
+  still alive.** An adopted backend leaves nothing behind when it stops — no
+  exit code, no child handle, no output in our log — so TASK 007 reads
+  `/api/info` at adoption and keeps the answer. Every other design produced the
+  same useless sentence on the panel: "a service stopped", with no way to say
+  which one. The general rule: capture what you will need from a resource you
+  do not own at the moment you attach to it, not at the moment you need it.
 - **Verification evidence that is not committed is verification that did not
   happen.** TASK 005's three screenshots were rendered inside a session and
   lost when it ended; TASK 005b had to re-run every state from scratch to get
@@ -84,8 +108,8 @@ what it does rather than how it is displayed. After Phase A: TASK 008
 | Item | Owner |
 |---|---|
 | `JOB_HUNTER_DATA_DIR` and `JOB_HUNTER_DATABASE_URL` are used verbatim, so a relative value resolves against the working directory. This is how the `.tmpdata` database came to exist. Resolve both to absolute paths at startup and reject a relative value, before any migration ever runs. | TASK 008 |
-| No health poll and no automatic restart. The shell notices a child that exits and does nothing further. | TASK 007 |
-| A backend the shell adopts rather than spawns has no child handle: it is not killed on shutdown and supervision cannot restart it. No longer silent — TASK 005 made the panel label it as attached and state that its output is not captured — but the behaviour itself is still TASK 007's to decide. | TASK 007 |
+| **Invariant 4 is breached on the Dashboard, and the arithmetic underneath it is wrong in a way the screenshot does not show.** Two findings, together because they are the same twenty lines of code. (a) *Confirmed in code.* `services/analytics.py` computes `low_confidence` on every rate and returns the numerator and denominator with it; `AnalyticsView.tsx:274` honours it. `DashboardView.tsx:142-156` does not — the Interviews and Offers tiles render `${percent(value)} of sent` and drop `low_confidence`, the numerator and the denominator. The live database has three submitted applications, so "33.3% of sent" is shown unlabelled over a denominator of 3 where `CLAUDE.md` rule 4 requires `low_confidence` under five. (b) *Checked against the code, and the suspicion in the brief was wrong about the mechanism.* The denominator is **not** weekly: `applications_submitted` and the rates are all-time, and `applications_submitted_this_week` is only the delta chip. The real defect is that numerator and denominator use two different definitions of the same thing — the numerator is a **current stage** count (`stage == INTERVIEW`) while the denominator is a **lifetime event** count (`submitted_at is not null`). So an application that moves from Interview to Offer silently leaves the interview numerator, and the pipeline's four non-archived rows against the tile's three submitted show at least one row sitting in a post-submission stage with no `submitted_at`. Fix both together; the second is not visible from any screenshot. | TASK 029 |
+| **Two named normalisation failures, both visible on the Dashboard's recent matches.** (a) A repeated location token: *Engineer Estimator*, Crystalia Glass LLC, renders as "Bishkek, Bishkek, Bishkek …" — city, region and country are the same word and are concatenated rather than collapsed. (b) Two spellings of one value are not reconciled: *Software Engineer III Mobile*, Stone, renders "Remoto" while *DESARROLLADOR FULL STACK*, Kruger NearShore LLC, renders "Remote". Both are real rows in the live database, so they are test inputs, not hypotheticals. | TASK 023 |
 | The live database holds **2 candidate rows** where a single-profile product allows exactly one. TASK 013 must resolve the duplicate and add a constraint enforcing one: every generated document is rendered from profile fields, so an arbitrary pick between two rows is a truthfulness defect, not a tidiness one. | TASK 013 |
 
 ## Reproducibility note
