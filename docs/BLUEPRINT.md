@@ -20,6 +20,20 @@ Two findings raised during the audit are **withdrawn** after verification:
 
 Every other finding below was reproduced against the actual source.
 
+## 0.1 Source corrections, TASK 021a, 12 September 2026
+
+§10.2 was written from what these sources publish about themselves. TASK 021a
+measured them from the machine the product runs on. Four claims did not survive
+and are corrected in place below; `docs/SOURCES.md` carries the measurements,
+the verbatim terms and the request counts.
+
+| Claim in §10.2 | What was measured |
+|---|---|
+| Adzuna has "a `pt` country endpoint" and is "the single highest-value integration for a Portuguese user" | `/v1/api/jobs/pt/search/1` returns HTTP 404 `UNSUPPORTED_COUNTRY`. Portugal is not in the supported set and `adzuna.pt` does not resolve. Adzuna's value to this user is Spain, and it is real but smaller. |
+| Remotive gives "broad remote coverage, EU-friendly" | Its free API's entire board is 16 postings. |
+| EURES is the "highest priority new source for this user" | The Commission publishes no API for third parties, and its terms restrict API extraction to EURES partner organisations recognised by a National Coordination Office. EURES is out pending a Sponsor decision, and no request was made to it. |
+| OD-2 defers the Portuguese national boards because Adzuna's `pt` endpoint "covers a meaningful slice of the same inventory legitimately" | That endpoint does not exist, so the premise is gone. Jooble covers it instead: a third of the Portuguese inventory it returned is attributed to ITJobs.pt, reached without any request to ITJobs.pt. |
+
 ---
 
 # 1. Executive assessment
@@ -868,10 +882,10 @@ Replace `truthfulness.py` with a real validator. Three tiers:
 | Source | Endpoint | Note |
 |---|---|---|
 | RemoteOK | `remoteok.com/api` | already built; Cloudflare-fronted, will sometimes 403 — report honestly |
-| Remotive | public JSON | broad remote coverage, EU-friendly |
+| Remotive | public JSON | **measured, TASK 021a: its free API's whole board is 16 postings.** Keep it, at Remotive's advised maximum of four requests a day, and expect almost nothing |
 | Arbeitnow | public JSON | **explicitly EU/DE-focused** — the closest thing to a European default |
 | HN Who-is-hiring | Algolia, **`search_by_date`** | fix the ranking bug; mine ATS URLs out of comment bodies (mr-jobs' `hn_source` does this well) |
-| EURES | official EU public job mobility API | the only genuinely pan-European public source; **highest priority new source for this user** |
+| EURES | no API the Commission publishes for third parties | **measured, TASK 021a: out, pending a Sponsor decision, and no request was made to it.** The endpoint that exists is documented only by a community project that disclaims Commission endorsement, and the portal's terms restrict API extraction to recognised EURES partner organisations. `docs/SOURCES.md` has the wording |
 
 **Tier 1 — company-scoped ATS, keyless, needs a slug:**
 
@@ -883,12 +897,12 @@ Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, **Personio** (ve
 
 | Source | Why |
 |---|---|
-| **Adzuna** | official REST API, free tier, **a `pt` country endpoint**. This is the single highest-value integration for a Portuguese user and should be in the first-run wizard as an optional step. |
-| **Jooble** | official API, free tier, strong PT/ES coverage |
+| **Adzuna** | official REST API, free tier. **There is no `pt` endpoint** — Portugal returns 404 `UNSUPPORTED_COUNTRY`. Its value here is Spain, where a quarter of the Angular postings are explicitly remote, plus a thin 2–10% remote share across fr, de, pl, it and nl. Its terms require every displayed advert to be labelled "Jobs by Adzuna" with the word "Jobs" hyperlinked, and cap use at 25/minute, 250/day, 1000/week, 2500/month. |
+| **Jooble** | official API, and **the source that decides whether this product is worth running**: 85 of the 97 reachable postings TASK 021a measured came from it, against 12 from everything else combined. Its key carries a **default lifetime limit of 500 requests**. `ResultOnPage: 100` is honoured, so one request returns a hundred postings — which is what makes a periodic sweep affordable. It cannot be a daily source, and TASK 027 must hold a persisted counter, not one that resets with the process. |
 
 No key → return `SourceResult(ok=True, jobs=[], skipped="needs-keys")`. **Never an error.** A missing key is a configuration state, not a failure.
 
-**Tier 3 — Portuguese national boards.** ITJobs.pt, Landing.jobs, Net-Empregos. **Do not build these until their Terms of Service have been read.** If a public API or RSS feed exists and permits it, they are the highest-relevance sources available for this user. If the only route is HTML scraping against a ToS that prohibits it, they are **out** — the same rule that excludes LinkedIn and Indeed excludes them. The Developer must not implement any of these without an explicit Sponsor decision recorded in `docs/SOURCES.md`.
+**Tier 3 — Portuguese national boards.** ITJobs.pt, Landing.jobs, Net-Empregos. **Do not build these until their Terms of Service have been read.** TASK 021a makes this less urgent than it was: a third of the Portuguese postings Jooble returned are attributed to ITJobs.pt, so the inventory is already reachable without a single request to it. The rule below is unchanged — the pressure behind it is gone. If a public API or RSS feed exists and permits it, they are the highest-relevance sources available for this user. If the only route is HTML scraping against a ToS that prohibits it, they are **out** — the same rule that excludes LinkedIn and Indeed excludes them. The Developer must not implement any of these without an explicit Sponsor decision recorded in `docs/SOURCES.md`.
 
 **Permanently rejected:** LinkedIn, Indeed, Glassdoor, StepStone, Xing, Workday scraping. `ai-job-hunter-app` retired all of them for anti-bot; ApplyPilot and mr-jobs reach them only through ToS-violating scraping. They stay out. Adzuna and Jooble already aggregate much of that inventory legitimately.
 
@@ -1563,7 +1577,7 @@ Ordered. Each task is independently implementable, independently testable, and s
 |---|---|---|---|---|
 | R-1 | **PyInstaller + WeasyPrint native dependencies fail to bundle on Windows.** WeasyPrint pulls in Pango/Cairo/GObject. | Medium | High — blocks TASK 018 | Test the bundle on a clean VM as the *first* step of TASK 018, not the last. Fallback: the Typst CLI as a second sidecar, or ReportLab with a hand-built layout (uglier, pure Python, always bundles). |
 | R-2 | **An 8B local model produces poor tailoring**, even with structural assembly. | Medium | Medium | The structural design contains the damage — a weak model produces a *dull* CV, never a false one. Mitigate with per-stage model overrides and an honest "the model added little here" signal. Measure it: keep 10 fixture jobs and diff the output across models. |
-| R-3 | **European source coverage still disappoints** after TASK 022. EURES quality varies; the ATS seed list may not cover Portuguese employers well. | Medium | High — it is the whole product for this user | Make TASK 022's acceptance criterion **≥30 relevant postings**, and treat a miss as a blocker, not a partial pass. Adzuna's `pt` endpoint is the fallback lever; escalate the ITJobs/Landing.jobs ToS question early. |
+| R-3 | **European source coverage still disappoints** after TASK 022. EURES quality varies; the ATS seed list may not cover Portuguese employers well. | Medium | High — it is the whole product for this user | Make TASK 022's acceptance criterion **≥30 relevant postings**, and treat a miss as a blocker, not a partial pass. ~~Adzuna's `pt` endpoint is the fallback lever~~ — it does not exist. **TASK 021a measured 97 reachable postings against this bar, 85 of them from Jooble**, so the risk is no longer that the inventory is absent; it is that it rests on one metered source. The lever is Jooble's request budget and the ATS employers behind it. |
 | R-4 | **The validator produces false positives** and blocks legitimate documents, training the user to click "Keep" on everything. | Medium | High — it destroys the guarantee | Criticals must be *precise*, not *broad*. Every false positive found in use becomes a fixture. Ship with Warnings where precision is uncertain and promote to Critical only once the fixture set proves it. The "Keep → add to profile" resolution is the pressure valve: it makes the honest path the easy one. |
 | R-5 | **Scope.** This roadmap is ~50 tasks. `ai-job-hunter-app` shows where unbounded scope leads — 25 boards, 16 templates, an extension, an MCP server, and a docs set that admits it is stale. | **High** | High | Phases A–E are the MVP and nothing else ships first. Resist every source beyond the recommended set, every template beyond two, and every V2 item until V1 has been used for a month. |
 | R-6 | **Gmail OAuth onboarding is heavy** (a Google Cloud project) and most users will not complete it. | High | Medium | It is V1.5 and fully optional. If completion is low, the fallback is a manual "paste the rejection email" box, which captures most of the value for none of the setup. |
@@ -1653,7 +1667,7 @@ Per the standing rule that the PO decides what the PO can decide. This section c
 
 | # | Decision | Closed as |
 |---|---|---|
-| OD-2 | Portuguese national boards | **Deferred, not rejected.** Adzuna's `pt` endpoint (official API, free tier) goes into TASK 022 and covers a meaningful slice of the same inventory legitimately. ITJobs / Landing.jobs / Net-Empregos are revisited *after* TASK 022 ships, and only if the ≥30-relevant-postings bar is missed. If revisited, the first step is checking for an official API or feed — at ten requests a day on a personal tool the practical exposure is an IP block rather than anything legal, but the honest route is still the route we take first. |
+| OD-2 | Portuguese national boards | **Deferred, not rejected — and the reason for the deferral has changed.** The original reason was that Adzuna's `pt` endpoint covers the same inventory legitimately. TASK 021a established that no such endpoint exists, so that reason is withdrawn. The deferral stands on a better one: **Jooble already returns this inventory**, a third of it attributed to ITJobs.pt, with no request made to any Tier 3 board. ITJobs / Landing.jobs / Net-Empregos are still revisited only *after* TASK 022 ships and only if the bar is missed, and the first step is still to look for an official API or feed. |
 | OD-3 | Default model | **`qwen3:14b` at `num_ctx 16384`, with a per-stage override** (amended TASK 005, replacing the `qwen3:8b` default): scoring runs over a cached shortlist rather than every posting, so the throughput argument for an 8B was never binding, and `qwen3:14b` is already installed on the only machine that runs this while `qwen3:8b` is not. The per-stage override is unchanged, so the 30B can still be pinned to `cover_letter` and `tailor_cv`. The `Modelfile` is deleted; `num_ctx` goes per request. |
 | OD-4 | Code signing | **Dropped.** |
 | OD-6 | PDF engine | **WeasyPrint.** With PyInstaller gone this is a plain `pip install` and carries no packaging risk. Typst stays a V2 upgrade if the output disappoints. |
