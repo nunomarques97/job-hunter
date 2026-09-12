@@ -76,7 +76,7 @@ is part of every task's definition of done.
   is gone, and says in the panel and the log when it happened. Re-attaching is
   not a restart and spends none of the one-restart budget; "Check again" now
   drives it through a new `backend_recheck` command rather than only redrawing.
-  *Commit: `TBD`.*
+  *Commit: `8c0a814`.*
 
 ## Current work unit
 
