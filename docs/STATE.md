@@ -55,7 +55,8 @@ is part of every task's definition of done.
   have used; the log tail is labelled as the end of today's file and marks
   where this launch began; the first log line is no longer clipped in half
   (the scroll box is now a whole number of 20px lines); and the Dashboard says
-  "1 strong match", not "matches". *Commit: `8abbae2`.*
+  "1 strong match", not "matches". *Commits: `8abbae2`, `2805e09` (the adopted-stopped
+  remedy, which promised a recovery this window cannot make).*
 
 ## Current work unit
 
